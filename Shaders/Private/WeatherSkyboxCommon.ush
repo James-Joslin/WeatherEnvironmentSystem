@@ -77,8 +77,8 @@ float WeatherGetFarPlaneMask(
 
 float4 WeatherEvaluateSkybox(
 	FMaterialPixelParameters Parameters,
-	float3 SceneColor,
-	float LinearSceneDepth,
+	float4 SceneColorSample,
+	float4 SceneDepthSample,
 	float3 AtmosphereLuminance,
 	TextureCube WeatherSkybox1,
 	SamplerState WeatherSkybox1Sampler,
@@ -93,7 +93,7 @@ float4 WeatherEvaluateSkybox(
 	float4 Luminosities,
 	float4 MipLevels,
 	float4 GradientParameters,
-	float3 GradientColor,
+	float4 GradientColor,
 	float4 Tint,
 	float TintBlend,
 	float MaximumBrightness,
@@ -101,6 +101,11 @@ float4 WeatherEvaluateSkybox(
 	float4 DepthParameters,
 	float4 AtmosphereParameters)
 {
+	// Scene Texture expressions expose Color as float4 in a Custom node. Keep the
+	// function signature identical to Unreal's generated wrapper and select the
+	// required channels here.
+	const float3 SceneColor = SceneColorSample.rgb;
+	const float LinearSceneDepth = SceneDepthSample.r;
 	const float3 Direction = WeatherGetWorldViewDirection(Parameters, SkyRotationDegrees);
 
 	float3 CombinedSky = 0.0;
@@ -130,7 +135,7 @@ float4 WeatherEvaluateSkybox(
 	const float ShapedGradient = pow(
 		saturate(VerticalCoordinate * GradientParameters.x),
 		max(GradientParameters.y, 0.001));
-	CombinedSky += GradientColor * ShapedGradient * GradientParameters.z;
+	CombinedSky += GradientColor.rgb * ShapedGradient * GradientParameters.z;
 
 	// Tint alpha controls tint strength; TintBlend controls the final optional blend.
 	const float3 EffectiveTint = lerp(1.0.xxx, Tint.rgb, saturate(Tint.a));
@@ -150,6 +155,60 @@ float4 WeatherEvaluateSkybox(
 	// Bright atmosphere reveals the original atmospheric sky. Geometry always keeps SceneColor.
 	const float3 VisibleSky = lerp(CombinedSky, SceneColor, AtmosphereFade);
 	return float4(lerp(SceneColor, VisibleSky, SkyMask), 1.0);
+}
+
+// Compatibility for materials generated before the vector parameters were
+// explicitly connected through their RGBA output. UE exposes output 0 of a
+// Vector Parameter as RGB, so those graphs compile float3 arguments. The
+// editor repair command reconnects them to RGBA; these defaults keep the old
+// graph usable long enough to run that repair without losing the fourth cube.
+float4 WeatherEvaluateSkybox(
+	FMaterialPixelParameters Parameters,
+	float4 SceneColorSample,
+	float4 SceneDepthSample,
+	float3 AtmosphereLuminance,
+	TextureCube WeatherSkybox1,
+	SamplerState WeatherSkybox1Sampler,
+	TextureCube WeatherSkybox2,
+	SamplerState WeatherSkybox2Sampler,
+	TextureCube WeatherSkybox3,
+	SamplerState WeatherSkybox3Sampler,
+	TextureCube WeatherSkybox4,
+	SamplerState WeatherSkybox4Sampler,
+	float3 HueShifts,
+	float3 Saturations,
+	float3 Luminosities,
+	float3 MipLevels,
+	float3 GradientParameters,
+	float3 GradientColor,
+	float3 Tint,
+	float TintBlend,
+	float MaximumBrightness,
+	float SkyRotationDegrees,
+	float3 DepthParameters,
+	float3 AtmosphereParameters)
+{
+	return WeatherEvaluateSkybox(
+		Parameters,
+		SceneColorSample,
+		SceneDepthSample,
+		AtmosphereLuminance,
+		WeatherSkybox1, WeatherSkybox1Sampler,
+		WeatherSkybox2, WeatherSkybox2Sampler,
+		WeatherSkybox3, WeatherSkybox3Sampler,
+		WeatherSkybox4, WeatherSkybox4Sampler,
+		float4(HueShifts, 0.0),
+		float4(Saturations, 1.0),
+		float4(Luminosities, 1.0),
+		float4(MipLevels, 0.0),
+		float4(GradientParameters, 0.0),
+		float4(GradientColor, 1.0),
+		float4(Tint, 1.0),
+		TintBlend,
+		MaximumBrightness,
+		SkyRotationDegrees,
+		float4(DepthParameters, 0.0),
+		float4(AtmosphereParameters, 1.0));
 }
 
 #endif
