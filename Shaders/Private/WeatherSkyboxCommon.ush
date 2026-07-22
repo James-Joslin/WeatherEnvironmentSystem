@@ -1,0 +1,155 @@
+// Copyright James Joslin. All Rights Reserved.
+// Compact four-cubemap post-process sky compositing for WeatherEnvironmentSystem.
+
+#ifndef WEATHER_SKYBOX_COMMON_USH
+#define WEATHER_SKYBOX_COMMON_USH
+
+float3 WeatherRgbToHsv(float3 Color)
+{
+	const float4 K = float4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+	const float4 P = lerp(float4(Color.bg, K.wz), float4(Color.gb, K.xy), step(Color.b, Color.g));
+	const float4 Q = lerp(float4(P.xyw, Color.r), float4(Color.r, P.yzx), step(P.x, Color.r));
+	const float D = Q.x - min(Q.w, Q.y);
+	const float Epsilon = 1.0e-10;
+	return float3(abs(Q.z + (Q.w - Q.y) / (6.0 * D + Epsilon)), D / (Q.x + Epsilon), Q.x);
+}
+
+float3 WeatherHsvToRgb(float3 Hsv)
+{
+	const float4 K = float4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+	const float3 P = abs(frac(Hsv.xxx + K.xyz) * 6.0 - K.www);
+	return Hsv.z * lerp(K.xxx, saturate(P - K.xxx), Hsv.y);
+}
+
+float3 WeatherGradeSkyLayer(float3 Color, float HueShift, float Saturation, float Luminosity)
+{
+	float3 Hsv = WeatherRgbToHsv(max(Color, 0.0));
+	Hsv.x = frac(Hsv.x + HueShift);
+	Color = WeatherHsvToRgb(Hsv);
+
+	const float Luminance = dot(Color, float3(0.2126, 0.7152, 0.0722));
+	Color = lerp(Luminance.xxx, Color, max(Saturation, 0.0));
+	return Color * max(Luminosity, 0.0);
+}
+
+float3 WeatherRotateSkyDirection(float3 Direction, float RotationDegrees)
+{
+	float SineValue;
+	float CosineValue;
+	sincos(radians(RotationDegrees), SineValue, CosineValue);
+	return normalize(float3(
+		Direction.x * CosineValue - Direction.y * SineValue,
+		Direction.x * SineValue + Direction.y * CosineValue,
+		Direction.z));
+}
+
+float3 WeatherGetWorldViewDirection(FMaterialPixelParameters Parameters, float RotationDegrees)
+{
+	const float2 ViewportUv = GetViewportUV(Parameters);
+	const float2 ScreenPosition = ViewportUVToScreenPos(ViewportUv);
+	const float3 WorldDirection = normalize(
+		ScreenVectorFromScreenRect(float4(ScreenPosition, 1.0, 0.0)));
+	return WeatherRotateSkyDirection(WorldDirection, RotationDegrees);
+}
+
+float WeatherGetFarPlaneMask(
+	FMaterialPixelParameters Parameters,
+	float LinearSceneDepth,
+	float4 DepthParameters)
+{
+	const float2 DepthUv = GetDefaultSceneTextureUV(Parameters, PPI_SceneDepth);
+	const float DeviceZ = LookupDeviceZ(DepthUv);
+	const float DeviceZEpsilon = max(DepthParameters.x, 0.0);
+	const float DeviceZFeather = max(DepthParameters.y, 1.0e-8);
+
+	// Unreal's reversed-Z far plane is zero. This test is independent of ray length and FOV.
+	const float RawFarPlaneMask =
+		1.0 - smoothstep(DeviceZEpsilon, DeviceZEpsilon + DeviceZFeather, DeviceZ);
+
+	const float LinearFallbackDistance = DepthParameters.z;
+	const float LinearFallbackMask =
+		LinearFallbackDistance > 0.0
+			? step(LinearFallbackDistance, LinearSceneDepth)
+			: 0.0;
+
+	return saturate(max(RawFarPlaneMask, LinearFallbackMask));
+}
+
+float4 WeatherEvaluateSkybox(
+	FMaterialPixelParameters Parameters,
+	float3 SceneColor,
+	float LinearSceneDepth,
+	float3 AtmosphereLuminance,
+	TextureCube WeatherSkybox1,
+	SamplerState WeatherSkybox1Sampler,
+	TextureCube WeatherSkybox2,
+	SamplerState WeatherSkybox2Sampler,
+	TextureCube WeatherSkybox3,
+	SamplerState WeatherSkybox3Sampler,
+	TextureCube WeatherSkybox4,
+	SamplerState WeatherSkybox4Sampler,
+	float4 HueShifts,
+	float4 Saturations,
+	float4 Luminosities,
+	float4 MipLevels,
+	float4 GradientParameters,
+	float3 GradientColor,
+	float4 Tint,
+	float TintBlend,
+	float MaximumBrightness,
+	float SkyRotationDegrees,
+	float4 DepthParameters,
+	float4 AtmosphereParameters)
+{
+	const float3 Direction = WeatherGetWorldViewDirection(Parameters, SkyRotationDegrees);
+
+	float3 CombinedSky = 0.0;
+	CombinedSky += WeatherGradeSkyLayer(
+		TextureCubeSampleLevel(WeatherSkybox1, WeatherSkybox1Sampler, Direction, max(MipLevels.x, 0.0)).rgb,
+		HueShifts.x,
+		Saturations.x,
+		Luminosities.x);
+	CombinedSky += WeatherGradeSkyLayer(
+		TextureCubeSampleLevel(WeatherSkybox2, WeatherSkybox2Sampler, Direction, max(MipLevels.y, 0.0)).rgb,
+		HueShifts.y,
+		Saturations.y,
+		Luminosities.y);
+	CombinedSky += WeatherGradeSkyLayer(
+		TextureCubeSampleLevel(WeatherSkybox3, WeatherSkybox3Sampler, Direction, max(MipLevels.z, 0.0)).rgb,
+		HueShifts.z,
+		Saturations.z,
+		Luminosities.z);
+	CombinedSky += WeatherGradeSkyLayer(
+		TextureCubeSampleLevel(WeatherSkybox4, WeatherSkybox4Sampler, Direction, max(MipLevels.w, 0.0)).rgb,
+		HueShifts.w,
+		Saturations.w,
+		Luminosities.w);
+
+	// World-Z gradient remains stable when aspect ratio or field of view changes.
+	const float VerticalCoordinate = saturate(Direction.z * 0.5 + 0.5 + GradientParameters.w);
+	const float ShapedGradient = pow(
+		saturate(VerticalCoordinate * GradientParameters.x),
+		max(GradientParameters.y, 0.001));
+	CombinedSky += GradientColor * ShapedGradient * GradientParameters.z;
+
+	// Tint alpha controls tint strength; TintBlend controls the final optional blend.
+	const float3 EffectiveTint = lerp(1.0.xxx, Tint.rgb, saturate(Tint.a));
+	CombinedSky = lerp(CombinedSky, CombinedSky * EffectiveTint, saturate(TintBlend));
+	CombinedSky = clamp(CombinedSky, 0.0, max(MaximumBrightness, 0.0));
+
+	const float SkyMask = WeatherGetFarPlaneMask(Parameters, LinearSceneDepth, DepthParameters);
+
+	const float AtmosphereLuma = dot(max(AtmosphereLuminance, 0.0), float3(0.2126, 0.7152, 0.0722));
+	const float AtmosphereRange = max(AtmosphereParameters.w - AtmosphereParameters.z, 1.0e-5);
+	const float AtmosphereNormalized =
+		saturate((AtmosphereLuma - AtmosphereParameters.z) / AtmosphereRange);
+	const float AtmosphereFade =
+		pow(AtmosphereNormalized, max(AtmosphereParameters.y, 0.001))
+		* saturate(AtmosphereParameters.x);
+
+	// Bright atmosphere reveals the original atmospheric sky. Geometry always keeps SceneColor.
+	const float3 VisibleSky = lerp(CombinedSky, SceneColor, AtmosphereFade);
+	return float4(lerp(SceneColor, VisibleSky, SkyMask), 1.0);
+}
+
+#endif
