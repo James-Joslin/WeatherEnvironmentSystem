@@ -1,0 +1,32 @@
+# Unreal Engine generated output
+/Binaries/
+/Build/
+/DerivedDataCache/
+/Intermediate/
+/Saved/
+
+# Visual Studio and IDE state
+/.vs/
+/.idea/
+/.vscode/
+*.sln
+*.suo
+*.user
+*.userprefs
+*.VC.db
+*.VC.opendb
+*.opensdf
+*.sdf
+
+# Local logs and temporary files
+*.log
+*.tmp
+*.temp
+*~
+
+# Operating-system metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+WEATHER_ENVIRONMENT_IMPLEMENTATION_PLAN.md
