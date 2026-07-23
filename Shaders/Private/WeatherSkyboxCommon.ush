@@ -75,6 +75,35 @@ float WeatherGetFarPlaneMask(
 	return saturate(max(RawFarPlaneMask, LinearFallbackMask));
 }
 
+float WeatherGetDirectionalDaylightFade(
+	FMaterialPixelParameters Parameters,
+	float4 DayNightParameters)
+{
+	// Unreal stores the world-space direction toward atmosphere light 0. Its Z
+	// component is sin(solar elevation), so this remains independent of exposure,
+	// view direction, FOV, and the brightness of the sampled sky pixel.
+	const float3 AtmosphereSunDirection =
+		MaterialExpressionSkyAtmosphereLightDirection(Parameters, 0);
+	const float DirectionLengthSquared = dot(AtmosphereSunDirection, AtmosphereSunDirection);
+	if (DirectionLengthSquared < 1.0e-6)
+	{
+		// No valid atmosphere sun: retain luminance-only fallback behavior.
+		return 0.0;
+	}
+
+	const float SunDirectionZ =
+		AtmosphereSunDirection.z * rsqrt(DirectionLengthSquared);
+	const float FullNightElevation = min(DayNightParameters.x, DayNightParameters.y);
+	const float FullDayElevation = max(DayNightParameters.x, DayNightParameters.y);
+	const float FullNightZ = sin(radians(FullNightElevation));
+	const float FullDayZ = sin(radians(FullDayElevation));
+	const float DaylightFade = smoothstep(
+		FullNightZ,
+		max(FullDayZ, FullNightZ + 1.0e-5),
+		SunDirectionZ);
+	return DaylightFade * saturate(DayNightParameters.z);
+}
+
 float4 WeatherEvaluateSkybox(
 	FMaterialPixelParameters Parameters,
 	float4 SceneColorSample,
@@ -99,7 +128,8 @@ float4 WeatherEvaluateSkybox(
 	float MaximumBrightness,
 	float SkyRotationDegrees,
 	float4 DepthParameters,
-	float4 AtmosphereParameters)
+	float4 AtmosphereParameters,
+	float4 DayNightParameters)
 {
 	// Scene Texture expressions expose Color as float4 in a Custom node. Keep the
 	// function signature identical to Unreal's generated wrapper and select the
@@ -151,10 +181,67 @@ float4 WeatherEvaluateSkybox(
 	const float AtmosphereFade =
 		pow(AtmosphereNormalized, max(AtmosphereParameters.y, 0.001))
 		* saturate(AtmosphereParameters.x);
+	const float DirectionalDaylightFade =
+		WeatherGetDirectionalDaylightFade(Parameters, DayNightParameters);
+	const float SceneSkyFade = max(AtmosphereFade, DirectionalDaylightFade);
 
-	// Bright atmosphere reveals the original atmospheric sky. Geometry always keeps SceneColor.
-	const float3 VisibleSky = lerp(CombinedSky, SceneColor, AtmosphereFade);
+	// Sun direction guarantees the night sky is hidden by day. View luminance can
+	// additionally reveal bright atmospheric features during the transition.
+	// Geometry always keeps SceneColor.
+	const float3 VisibleSky = lerp(CombinedSky, SceneColor, SceneSkyFade);
 	return float4(lerp(SceneColor, VisibleSky, SkyMask), 1.0);
+}
+
+// Compatibility for the repaired RGBA graph created before direction-derived
+// day/night parameters were added.
+float4 WeatherEvaluateSkybox(
+	FMaterialPixelParameters Parameters,
+	float4 SceneColorSample,
+	float4 SceneDepthSample,
+	float3 AtmosphereLuminance,
+	TextureCube WeatherSkybox1,
+	SamplerState WeatherSkybox1Sampler,
+	TextureCube WeatherSkybox2,
+	SamplerState WeatherSkybox2Sampler,
+	TextureCube WeatherSkybox3,
+	SamplerState WeatherSkybox3Sampler,
+	TextureCube WeatherSkybox4,
+	SamplerState WeatherSkybox4Sampler,
+	float4 HueShifts,
+	float4 Saturations,
+	float4 Luminosities,
+	float4 MipLevels,
+	float4 GradientParameters,
+	float4 GradientColor,
+	float4 Tint,
+	float TintBlend,
+	float MaximumBrightness,
+	float SkyRotationDegrees,
+	float4 DepthParameters,
+	float4 AtmosphereParameters)
+{
+	return WeatherEvaluateSkybox(
+		Parameters,
+		SceneColorSample,
+		SceneDepthSample,
+		AtmosphereLuminance,
+		WeatherSkybox1, WeatherSkybox1Sampler,
+		WeatherSkybox2, WeatherSkybox2Sampler,
+		WeatherSkybox3, WeatherSkybox3Sampler,
+		WeatherSkybox4, WeatherSkybox4Sampler,
+		HueShifts,
+		Saturations,
+		Luminosities,
+		MipLevels,
+		GradientParameters,
+		GradientColor,
+		Tint,
+		TintBlend,
+		MaximumBrightness,
+		SkyRotationDegrees,
+		DepthParameters,
+		AtmosphereParameters,
+		float4(-6.0, 0.0, 1.0, 0.0));
 }
 
 // Compatibility for materials generated before the vector parameters were
@@ -208,7 +295,8 @@ float4 WeatherEvaluateSkybox(
 		MaximumBrightness,
 		SkyRotationDegrees,
 		float4(DepthParameters, 0.0),
-		float4(AtmosphereParameters, 1.0));
+		float4(AtmosphereParameters, 1.0),
+		float4(-6.0, 0.0, 1.0, 0.0));
 }
 
 #endif
