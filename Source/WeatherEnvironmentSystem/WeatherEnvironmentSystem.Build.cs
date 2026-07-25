@@ -14,5 +14,11 @@ public class WeatherEnvironmentSystem : ModuleRules
 			"CoreUObject",
 			"Engine"
 		});
+
+		PrivateDependencyModuleNames.AddRange(new string[]
+		{
+			"Projects",
+			"RenderCore"
+		});
 	}
 }

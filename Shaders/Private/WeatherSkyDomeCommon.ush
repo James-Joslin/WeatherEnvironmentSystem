@@ -1,0 +1,126 @@
+// Copyright James Joslin. All Rights Reserved.
+// Four-cubemap Is Sky surface material compositing for WeatherEnvironmentSystem.
+
+#ifndef WEATHER_SKY_DOME_COMMON_USH
+#define WEATHER_SKY_DOME_COMMON_USH
+
+float3 WeatherDomeRgbToHsv(float3 Color)
+{
+	const float4 K = float4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+	const float4 P = lerp(float4(Color.bg, K.wz), float4(Color.gb, K.xy), step(Color.b, Color.g));
+	const float4 Q = lerp(float4(P.xyw, Color.r), float4(Color.r, P.yzx), step(P.x, Color.r));
+	const float D = Q.x - min(Q.w, Q.y);
+	const float Epsilon = 1.0e-10;
+	return float3(abs(Q.z + (Q.w - Q.y) / (6.0 * D + Epsilon)), D / (Q.x + Epsilon), Q.x);
+}
+
+float3 WeatherDomeHsvToRgb(float3 Hsv)
+{
+	const float4 K = float4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+	const float3 P = abs(frac(Hsv.xxx + K.xyz) * 6.0 - K.www);
+	return Hsv.z * lerp(K.xxx, saturate(P - K.xxx), Hsv.y);
+}
+
+float3 WeatherDomeGradeLayer(float3 Color, float HueShift, float Saturation, float Luminosity)
+{
+	float3 Hsv = WeatherDomeRgbToHsv(max(Color, 0.0));
+	Hsv.x = frac(Hsv.x + HueShift);
+	Color = WeatherDomeHsvToRgb(Hsv);
+
+	const float Luminance = dot(Color, float3(0.2126, 0.7152, 0.0722));
+	Color = lerp(Luminance.xxx, Color, max(Saturation, 0.0));
+	return Color * max(Luminosity, 0.0);
+}
+
+float3 WeatherDomeRotateDirection(float3 Direction, float RotationDegrees)
+{
+	float SineValue;
+	float CosineValue;
+	sincos(radians(RotationDegrees), SineValue, CosineValue);
+	return normalize(float3(
+		Direction.x * CosineValue - Direction.y * SineValue,
+		Direction.x * SineValue + Direction.y * CosineValue,
+		Direction.z));
+}
+
+float WeatherDomeGetNightVisibility(
+	FMaterialPixelParameters Parameters,
+	float4 GradientColor)
+{
+	// GradientColor alpha is unused by the visible gradient, so the controller packs
+	// its continuous astronomical night visibility here without changing the graph.
+	return saturate(GradientColor.a);
+}
+
+float3 WeatherEvaluateSkyDome(
+	FMaterialPixelParameters Parameters,
+	float3 CameraVector,
+	float3 AtmosphereLuminance,
+	TextureCube WeatherSkybox1,
+	SamplerState WeatherSkybox1Sampler,
+	TextureCube WeatherSkybox2,
+	SamplerState WeatherSkybox2Sampler,
+	TextureCube WeatherSkybox3,
+	SamplerState WeatherSkybox3Sampler,
+	TextureCube WeatherSkybox4,
+	SamplerState WeatherSkybox4Sampler,
+	float4 HueShifts,
+	float4 Saturations,
+	float4 Luminosities,
+	float4 MipLevels,
+	float4 GradientParameters,
+	float4 GradientColor,
+	float4 Tint,
+	float4 DayNightParameters,
+	float TintBlend,
+	float MaximumBrightness,
+	float SkyRotationDegrees)
+{
+	// Camera Vector points from the surface toward the camera. Negating it gives
+	// the projection-correct camera-to-sky ray independently of dome tessellation.
+	const float3 Direction = WeatherDomeRotateDirection(
+		normalize(-CameraVector),
+		SkyRotationDegrees);
+
+	float3 NightSky = 0.0;
+	NightSky += WeatherDomeGradeLayer(
+		TextureCubeSampleLevel(WeatherSkybox1, WeatherSkybox1Sampler, Direction, max(MipLevels.x, 0.0)).rgb,
+		HueShifts.x,
+		Saturations.x,
+		Luminosities.x);
+	NightSky += WeatherDomeGradeLayer(
+		TextureCubeSampleLevel(WeatherSkybox2, WeatherSkybox2Sampler, Direction, max(MipLevels.y, 0.0)).rgb,
+		HueShifts.y,
+		Saturations.y,
+		Luminosities.y);
+	NightSky += WeatherDomeGradeLayer(
+		TextureCubeSampleLevel(WeatherSkybox3, WeatherSkybox3Sampler, Direction, max(MipLevels.z, 0.0)).rgb,
+		HueShifts.z,
+		Saturations.z,
+		Luminosities.z);
+	NightSky += WeatherDomeGradeLayer(
+		TextureCubeSampleLevel(WeatherSkybox4, WeatherSkybox4Sampler, Direction, max(MipLevels.w, 0.0)).rgb,
+		HueShifts.w,
+		Saturations.w,
+		Luminosities.w);
+
+	const float VerticalCoordinate = saturate(Direction.z * 0.5 + 0.5 + GradientParameters.w);
+	const float ShapedGradient = pow(
+		saturate(VerticalCoordinate * GradientParameters.x),
+		max(GradientParameters.y, 0.001));
+	NightSky += GradientColor.rgb * ShapedGradient * GradientParameters.z;
+
+	const float3 EffectiveTint = lerp(1.0.xxx, Tint.rgb, saturate(Tint.a));
+	NightSky = lerp(NightSky, NightSky * EffectiveTint, saturate(TintBlend));
+	NightSky = clamp(NightSky, 0.0, max(MaximumBrightness, 0.0));
+
+	const float NightVisibility = WeatherDomeGetNightVisibility(Parameters, GradientColor);
+	const float AtmosphereMultiplier = max(DayNightParameters.w, 0.0);
+
+	// The sky surface supplies only the background. Unreal's volumetric-cloud pass
+	// subsequently composites cloud radiance/transmittance over this result.
+	return max(AtmosphereLuminance, 0.0) * AtmosphereMultiplier
+		+ NightSky * NightVisibility;
+}
+
+#endif

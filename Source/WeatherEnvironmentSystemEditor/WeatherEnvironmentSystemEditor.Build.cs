@@ -16,8 +16,11 @@ public class WeatherEnvironmentSystemEditor : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
+			"AssetRegistry",
 			"CoreUObject",
 			"Engine",
+			"MaterialEditor",
+			"Projects",
 			"UnrealEd"
 		});
 	}
