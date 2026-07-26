@@ -9,12 +9,14 @@
 #include "Components/StaticMeshComponent.h"
 #include "Curves/CurveFloat.h"
 #include "Curves/CurveLinearColor.h"
+#include "DrawDebugHelpers.h"
 #include "Engine/DirectionalLight.h"
 #include "Engine/GameInstance.h"
 #include "Engine/SkyLight.h"
 #include "Engine/TextureCube.h"
 #include "EngineUtils.h"
 #include "Kismet/GameplayStatics.h"
+#include "LandscapeProxy.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
 #include "UObject/ConstructorHelpers.h"
@@ -93,6 +95,10 @@ void AWeatherEnvironmentController::BeginPlay()
 	bControllerRegistered = true;
 	WeatherStateSubsystem = StateSubsystem;
 	StateSubsystem->InitializeClock(GetClockSettings(), false);
+	if (bRebuildGridOnBeginPlay)
+	{
+		RebuildGrid();
+	}
 
 	ResolveWorldReferences();
 	ConfigureMoonMesh();
@@ -126,6 +132,10 @@ void AWeatherEnvironmentController::Tick(const float DeltaSeconds)
 	{
 		UpdateEnvironment(DeltaSeconds, false);
 	}
+
+#if ENABLE_DRAW_DEBUG
+	DrawWeatherGridDebug();
+#endif
 }
 
 void AWeatherEnvironmentController::OnConstruction(const FTransform& Transform)
@@ -137,7 +147,19 @@ void AWeatherEnvironmentController::OnConstruction(const FTransform& Transform)
 	const FWeatherSkyboxSettings& SkySettings = GetSkyboxSettings();
 	SkyPostProcessComponent->Priority = SkySettings.PostProcessPriority;
 	SkyPostProcessComponent->BlendWeight = FMath::Clamp(SkySettings.BlendWeight, 0.0f, 1.0f);
+
+	if (GetWorld() && !GetWorld()->IsGameWorld())
+	{
+		RebuildEditorPreviewGrid();
+	}
 }
+
+#if WITH_EDITOR
+bool AWeatherEnvironmentController::ShouldTickIfViewportsOnly() const
+{
+	return GridDebugSettings.bEnabled;
+}
+#endif
 
 void AWeatherEnvironmentController::RefreshEnvironment()
 {
@@ -152,6 +174,7 @@ void AWeatherEnvironmentController::SetEnvironmentProfile(UWeatherEnvironmentPro
 {
 	EnvironmentProfile = NewProfile;
 	RefreshEnvironment();
+	RebuildGrid();
 }
 
 UWeatherStateSubsystem* AWeatherEnvironmentController::GetWeatherStateSubsystem() const
@@ -179,6 +202,310 @@ const FWeatherSkyboxSettings& AWeatherEnvironmentController::GetSkyboxSettings()
 {
 	return EnvironmentProfile ? EnvironmentProfile->Skybox : SkyboxSettings;
 }
+
+const FWeatherGridDefinition& AWeatherEnvironmentController::GetGridDefinition() const
+{
+	return EnvironmentProfile ? EnvironmentProfile->Grid : GridDefinition;
+}
+
+void AWeatherEnvironmentController::RebuildGrid()
+{
+	TArray<ALandscapeProxy*> Sources;
+	Sources.Reserve(LandscapeSources.Num());
+	for (ALandscapeProxy* Landscape : LandscapeSources)
+	{
+		if (IsValid(Landscape))
+		{
+			Sources.Add(Landscape);
+		}
+	}
+
+	if (GetWorld() && GetWorld()->IsGameWorld())
+	{
+		if (UWeatherStateSubsystem* StateSubsystem = GetWeatherStateSubsystem())
+		{
+			StateSubsystem->RebuildGridFromLandscapeSources(GetGridDefinition(), Sources);
+			bLastGridBuildSucceeded = StateSubsystem->WasLastGridBuildSuccessful();
+			LastGridBuildMessage = StateSubsystem->GetLastGridBuildMessage();
+			return;
+		}
+	}
+
+	RebuildEditorPreviewGrid();
+}
+
+void AWeatherEnvironmentController::ClearGrid()
+{
+	if (GetWorld() && GetWorld()->IsGameWorld())
+	{
+		if (UWeatherStateSubsystem* StateSubsystem = GetWeatherStateSubsystem())
+		{
+			StateSubsystem->ClearGrid();
+			bLastGridBuildSucceeded = false;
+			LastGridBuildMessage = StateSubsystem->GetLastGridBuildMessage();
+		}
+	}
+	else
+	{
+		EditorPreviewGrid.Clear();
+		bLastGridBuildSucceeded = false;
+		LastGridBuildMessage = TEXT("Grid cleared. Adjust the grid definition if needed, then press Rebuild Grid.");
+	}
+}
+
+FWeatherGridInfo AWeatherEnvironmentController::GetGridInfo() const
+{
+	const FWeatherGrid* Grid = GetGridForDebug();
+	return Grid ? Grid->GetInfo() : FWeatherGridInfo();
+}
+
+bool AWeatherEnvironmentController::RebuildEditorPreviewGrid()
+{
+	TArray<ALandscapeProxy*> Sources;
+	Sources.Reserve(LandscapeSources.Num());
+	for (ALandscapeProxy* Landscape : LandscapeSources)
+	{
+		if (IsValid(Landscape))
+		{
+			Sources.Add(Landscape);
+		}
+	}
+
+	FBox SourceBounds(ForceInit);
+	FString Message;
+	if (!FWeatherGrid::ResolveSourceBounds(
+		GetWorld(),
+		GetGridDefinition(),
+		Sources,
+		SourceBounds,
+		Message))
+	{
+		bLastGridBuildSucceeded = false;
+		LastGridBuildMessage = Message;
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("WeatherEnvironmentController '%s': %s"),
+			*GetName(),
+			*Message);
+		return false;
+	}
+
+	if (!Message.IsEmpty())
+	{
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("WeatherEnvironmentController '%s': %s"),
+			*GetName(),
+			*Message);
+	}
+
+	const bool bBuilt = EditorPreviewGrid.Rebuild(SourceBounds, GetGridDefinition(), &Message);
+	bLastGridBuildSucceeded = bBuilt;
+	LastGridBuildMessage = Message;
+	if (!bBuilt)
+	{
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("WeatherEnvironmentController '%s': %s"),
+			*GetName(),
+			*Message);
+	}
+	return bBuilt;
+}
+
+const FWeatherGrid* AWeatherEnvironmentController::GetGridForDebug() const
+{
+	if (GetWorld() && GetWorld()->IsGameWorld())
+	{
+		if (const UWeatherStateSubsystem* StateSubsystem = GetWeatherStateSubsystem())
+		{
+			return &StateSubsystem->GetWeatherGrid();
+		}
+	}
+	return &EditorPreviewGrid;
+}
+
+#if ENABLE_DRAW_DEBUG
+void AWeatherEnvironmentController::DrawWeatherGridDebug() const
+{
+	if (!GridDebugSettings.bEnabled || !GetWorld())
+	{
+		return;
+	}
+
+#if WITH_EDITOR
+	if (GridDebugSettings.bDrawOnlyWhenSelected && !IsSelectedInEditor())
+	{
+		return;
+	}
+#endif
+
+	const FWeatherGrid* Grid = GetGridForDebug();
+	if (!bLastGridBuildSucceeded && !LastGridBuildMessage.IsEmpty())
+	{
+		DrawDebugString(
+			GetWorld(),
+			GetActorLocation() + FVector(0.0, 0.0, 2000.0),
+			LastGridBuildMessage,
+			nullptr,
+			FColor::Red,
+			0.0f,
+			true,
+			1.25f);
+	}
+
+	if (!Grid || !Grid->GetInfo().bIsValid)
+	{
+		return;
+	}
+
+	FVector ViewLocation = GetActorLocation();
+	if (const APlayerCameraManager* Camera = UGameplayStatics::GetPlayerCameraManager(this, 0))
+	{
+		ViewLocation = Camera->GetCameraLocation();
+	}
+
+	const FWeatherGridInfo& Info = Grid->GetInfo();
+	const double MaximumDrawDistanceSquared = FMath::Square(GridDebugSettings.DrawDistance);
+	const bool bLimitDistance = GridDebugSettings.DrawDistance > 0.0;
+	for (int32 Y = 0; Y < Info.Dimensions.Y; ++Y)
+	{
+		for (int32 X = 0; X < Info.Dimensions.X; ++X)
+		{
+			const FWeatherCellCoord Coord(X, Y);
+			const FWeatherCellState* State = Grid->FindCell(Coord);
+			if (!State)
+			{
+				continue;
+			}
+
+			const FVector2D Offset(
+				State->WorldCenter.X - ViewLocation.X,
+				State->WorldCenter.Y - ViewLocation.Y);
+			if (bLimitDistance && Offset.SizeSquared() > MaximumDrawDistanceSquared)
+			{
+				continue;
+			}
+
+			FColor CellColor = FColor(80, 180, 255);
+			switch (State->WeatherType)
+			{
+			case EWeatherType::Rain:
+			case EWeatherType::HeavyRain:
+				CellColor = FColor(60, 100, 255);
+				break;
+			case EWeatherType::Storm:
+				CellColor = FColor(180, 80, 255);
+				break;
+			case EWeatherType::Overcast:
+				CellColor = FColor(160, 160, 170);
+				break;
+			case EWeatherType::PartlyCloudy:
+				CellColor = FColor(130, 200, 220);
+				break;
+			default:
+				break;
+			}
+
+			if (GridDebugSettings.bDrawGridLines)
+			{
+				const FBox CellBounds = Grid->GetCellBounds(Coord);
+				const double Z = State->WorldCenter.Z;
+				const FVector A(CellBounds.Min.X, CellBounds.Min.Y, Z);
+				const FVector B(CellBounds.Max.X, CellBounds.Min.Y, Z);
+				const FVector C(CellBounds.Max.X, CellBounds.Max.Y, Z);
+				const FVector D(CellBounds.Min.X, CellBounds.Max.Y, Z);
+				DrawDebugLine(GetWorld(), A, B, CellColor, false, 0.0f, 0, GridDebugSettings.LineThickness);
+				DrawDebugLine(GetWorld(), B, C, CellColor, false, 0.0f, 0, GridDebugSettings.LineThickness);
+				DrawDebugLine(GetWorld(), C, D, CellColor, false, 0.0f, 0, GridDebugSettings.LineThickness);
+				DrawDebugLine(GetWorld(), D, A, CellColor, false, 0.0f, 0, GridDebugSettings.LineThickness);
+			}
+
+			if (GridDebugSettings.bDrawInfluenceSpheres)
+			{
+				DrawDebugSphere(
+					GetWorld(),
+					State->WorldCenter,
+					State->InfluenceRadius,
+					FMath::Clamp(GridDebugSettings.SphereSegments, 4, 64),
+					CellColor,
+					false,
+					0.0f,
+					0,
+					GridDebugSettings.LineThickness);
+			}
+
+			if (GridDebugSettings.bDrawWindArrows && !State->WindVector.IsNearlyZero())
+			{
+				DrawDebugDirectionalArrow(
+					GetWorld(),
+					State->WorldCenter,
+					State->WorldCenter + State->WindVector * GridDebugSettings.WindArrowScale,
+					GridDebugSettings.ArrowHeadSize,
+					FColor::Green,
+					false,
+					0.0f,
+					0,
+					GridDebugSettings.LineThickness);
+			}
+
+			FString Label;
+			if (GridDebugSettings.bDrawCoordinates)
+			{
+				Label += FString::Printf(TEXT("(%d, %d)"), X, Y);
+			}
+			if (GridDebugSettings.bDrawWeatherType)
+			{
+				Label += FString::Printf(TEXT("\n%s"), *UEnum::GetValueAsString(State->WeatherType));
+			}
+			if (GridDebugSettings.bDrawWindSpeed)
+			{
+				Label += FString::Printf(TEXT("\nWind %.1f cm/s"), State->WindVector.Size());
+			}
+			if (GridDebugSettings.bDrawCloudCoverage)
+			{
+				Label += FString::Printf(TEXT("\nCloud %.2f"), State->CloudCoverage);
+			}
+			if (GridDebugSettings.bDrawHumidity)
+			{
+				Label += FString::Printf(TEXT("\nHumidity %.2f"), State->Humidity);
+			}
+			if (GridDebugSettings.bDrawTemperature)
+			{
+				Label += FString::Printf(TEXT("\nTemp %.1f C"), State->TemperatureCelsius);
+			}
+			if (GridDebugSettings.bDrawPressure)
+			{
+				Label += FString::Printf(TEXT("\nPressure %.1f hPa"), State->PressureHpa);
+			}
+			if (GridDebugSettings.bDrawRainIntensity)
+			{
+				Label += FString::Printf(TEXT("\nRain %.2f"), State->RainIntensity);
+			}
+			if (GridDebugSettings.bDrawStorminess)
+			{
+				Label += FString::Printf(TEXT("\nStorm %.2f"), State->Storminess);
+			}
+
+			if (!Label.IsEmpty())
+			{
+				DrawDebugString(
+					GetWorld(),
+					State->WorldCenter + FVector(0.0, 0.0, 1000.0),
+					Label,
+					nullptr,
+					CellColor,
+					0.0f,
+					true,
+					1.0f);
+			}
+		}
+	}
+}
+#endif
 
 void AWeatherEnvironmentController::ResolveWorldReferences()
 {
