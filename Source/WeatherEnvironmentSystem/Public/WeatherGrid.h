@@ -89,7 +89,7 @@ struct WEATHERENVIRONMENTSYSTEM_API FWeatherCellState
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather", meta = (Units = "Celsius"))
 	float TemperatureCelsius = 20.0f;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather", meta = (Units = "hPa"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather")
 	float PressureHpa = 1013.25f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather", meta = (ClampMin = "0.0", ClampMax = "1.0"))
