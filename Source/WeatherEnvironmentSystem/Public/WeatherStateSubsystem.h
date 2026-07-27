@@ -6,9 +6,11 @@
 #include "Subsystems/GameInstanceSubsystem.h"
 #include "Tickable.h"
 #include "WeatherDateTime.h"
+#include "WeatherGrid.h"
 #include "WeatherStateSubsystem.generated.h"
 
 class AWeatherEnvironmentController;
+class ALandscapeProxy;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(
 	FWeatherDateTimeChangedSignature,
@@ -67,6 +69,47 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Weather|Clock")
 	FString GetClockDisplayString(bool bIncludeSeconds = false) const;
 
+	/** Discovers all landscape proxies in the active world and falls back to manual bounds. */
+	UFUNCTION(BlueprintCallable, Category = "Weather|Grid")
+	bool RebuildGridFromLandscape(const FWeatherGridDefinition& Definition);
+
+	/** Builds directly from explicit XY bounds while retaining the definition's query range and cap. */
+	UFUNCTION(BlueprintCallable, Category = "Weather|Grid")
+	bool RebuildGridFromBounds(const FBox& WorldBounds, const FWeatherGridDefinition& Definition);
+
+	UFUNCTION(BlueprintCallable, Category = "Weather|Grid")
+	void ClearGrid();
+
+	UFUNCTION(BlueprintPure, Category = "Weather|Grid")
+	bool WorldToCell(const FVector& WorldLocation, FWeatherCellCoord& OutCell) const;
+
+	UFUNCTION(BlueprintPure, Category = "Weather|Grid")
+	bool CellToWorld(FWeatherCellCoord Cell, FVector& OutWorldLocation) const;
+
+	UFUNCTION(BlueprintPure, Category = "Weather|Grid")
+	bool IsValidCell(FWeatherCellCoord Cell) const;
+
+	UFUNCTION(BlueprintPure, Category = "Weather|Grid")
+	bool GetCellState(FWeatherCellCoord Cell, FWeatherCellState& OutState) const;
+
+	UFUNCTION(BlueprintPure, Category = "Weather|Grid")
+	FWeatherSample GetWeatherAtLocation(const FVector& WorldLocation) const;
+
+	UFUNCTION(BlueprintPure, Category = "Weather|Grid")
+	TArray<FWeatherCellState> GetCellStatesForBounds(const FBox& WorldBounds) const;
+
+	UFUNCTION(BlueprintPure, Category = "Weather|Grid")
+	FWeatherGridInfo GetGridInfo() const { return WeatherGrid.GetInfo(); }
+
+	UFUNCTION(BlueprintPure, Category = "Weather|Grid")
+	FWeatherGridDefinition GetGridDefinition() const { return WeatherGrid.GetDefinition(); }
+
+	UFUNCTION(BlueprintPure, Category = "Weather|Grid")
+	bool WasLastGridBuildSuccessful() const { return bLastGridBuildSucceeded; }
+
+	UFUNCTION(BlueprintPure, Category = "Weather|Grid")
+	FString GetLastGridBuildMessage() const { return LastGridBuildMessage; }
+
 	UPROPERTY(BlueprintAssignable, Category = "Weather|Clock")
 	FWeatherDateTimeChangedSignature OnMinuteChanged;
 
@@ -79,6 +122,11 @@ public:
 	bool RegisterController(AWeatherEnvironmentController* Controller);
 	void UnregisterController(AWeatherEnvironmentController* Controller);
 	AWeatherEnvironmentController* GetActiveController() const;
+	bool RebuildGridFromLandscapeSources(
+		const FWeatherGridDefinition& Definition,
+		const TArray<ALandscapeProxy*>& LandscapeSources);
+	const FWeatherGrid& GetWeatherGrid() const { return WeatherGrid; }
+	FWeatherGrid& GetMutableWeatherGrid() { return WeatherGrid; }
 
 private:
 	void SetNativeDateTime(const FDateTime& NewDateTime, bool bBroadcastBoundaries);
@@ -88,6 +136,9 @@ private:
 	double TimeScale = 60.0;
 	bool bPaused = false;
 	bool bInitialClockSettingsApplied = false;
+	FWeatherGrid WeatherGrid;
+	bool bLastGridBuildSucceeded = false;
+	FString LastGridBuildMessage = TEXT("Grid has not been built.");
 
 	TWeakObjectPtr<AWeatherEnvironmentController> ActiveController;
 };
