@@ -5,6 +5,7 @@
 #include "CoreMinimal.h"
 #include "Engine/DataAsset.h"
 #include "WeatherDateTime.h"
+#include "WeatherGrid.h"
 #include "WeatherEnvironmentProfile.generated.h"
 
 class UCurveFloat;
@@ -268,4 +269,7 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weather")
 	FWeatherSkyboxSettings Skybox;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weather")
+	FWeatherGridDefinition Grid;
 };
