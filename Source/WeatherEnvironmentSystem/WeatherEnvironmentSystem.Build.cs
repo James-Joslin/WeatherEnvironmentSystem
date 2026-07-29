@@ -12,7 +12,8 @@ public class WeatherEnvironmentSystem : ModuleRules
 		{
 			"Core",
 			"CoreUObject",
-			"Engine"
+			"Engine",
+			"Landscape"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[]
