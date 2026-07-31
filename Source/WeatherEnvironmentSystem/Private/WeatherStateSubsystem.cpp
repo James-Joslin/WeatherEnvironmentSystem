@@ -13,11 +13,15 @@ void UWeatherStateSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	TimeScale = 60.0;
 	bPaused = false;
 	bInitialClockSettingsApplied = false;
+	WeatherGrid.Clear();
+	bLastGridBuildSucceeded = false;
+	LastGridBuildMessage = TEXT("Grid has not been built.");
 	ActiveController.Reset();
 }
 
 void UWeatherStateSubsystem::Deinitialize()
 {
+	WeatherGrid.Clear();
 	ActiveController.Reset();
 	Super::Deinitialize();
 }
@@ -136,6 +140,115 @@ double UWeatherStateSubsystem::GetNormalizedDayFraction() const
 FString UWeatherStateSubsystem::GetClockDisplayString(const bool bIncludeSeconds) const
 {
 	return GetCurrentDateTime().ToDisplayString(bIncludeSeconds);
+}
+
+bool UWeatherStateSubsystem::RebuildGridFromLandscape(
+	const FWeatherGridDefinition& Definition)
+{
+	return RebuildGridFromLandscapeSources(Definition, TArray<ALandscapeProxy*>());
+}
+
+bool UWeatherStateSubsystem::RebuildGridFromBounds(
+	const FBox& WorldBounds,
+	const FWeatherGridDefinition& Definition)
+{
+	FString Message;
+	const bool bBuilt = WeatherGrid.Rebuild(WorldBounds, Definition, &Message);
+	bLastGridBuildSucceeded = bBuilt;
+	LastGridBuildMessage = Message;
+	if (bBuilt)
+	{
+		UE_LOG(LogTemp, Display, TEXT("WeatherEnvironment: %s"), *Message);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("WeatherEnvironment: %s"), *Message);
+	}
+	return bBuilt;
+}
+
+bool UWeatherStateSubsystem::RebuildGridFromLandscapeSources(
+	const FWeatherGridDefinition& Definition,
+	const TArray<ALandscapeProxy*>& LandscapeSources)
+{
+	FBox SourceBounds(ForceInit);
+	FString Message;
+	if (!FWeatherGrid::ResolveSourceBounds(
+		GetWorld(),
+		Definition,
+		LandscapeSources,
+		SourceBounds,
+		Message))
+	{
+		bLastGridBuildSucceeded = false;
+		LastGridBuildMessage = Message;
+		UE_LOG(LogTemp, Warning, TEXT("WeatherEnvironment: %s"), *Message);
+		return false;
+	}
+
+	if (!Message.IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("WeatherEnvironment: %s"), *Message);
+	}
+
+	return RebuildGridFromBounds(SourceBounds, Definition);
+}
+
+void UWeatherStateSubsystem::ClearGrid()
+{
+	WeatherGrid.Clear();
+	bLastGridBuildSucceeded = false;
+	LastGridBuildMessage = TEXT("Grid cleared. Adjust the grid definition if needed, then press Rebuild Grid.");
+}
+
+bool UWeatherStateSubsystem::WorldToCell(
+	const FVector& WorldLocation,
+	FWeatherCellCoord& OutCell) const
+{
+	return WeatherGrid.WorldToCell(WorldLocation, OutCell);
+}
+
+bool UWeatherStateSubsystem::CellToWorld(
+	const FWeatherCellCoord Cell,
+	FVector& OutWorldLocation) const
+{
+	return WeatherGrid.CellToWorld(Cell, OutWorldLocation);
+}
+
+bool UWeatherStateSubsystem::IsValidCell(const FWeatherCellCoord Cell) const
+{
+	return WeatherGrid.IsValidCell(Cell);
+}
+
+bool UWeatherStateSubsystem::GetCellState(
+	const FWeatherCellCoord Cell,
+	FWeatherCellState& OutState) const
+{
+	return WeatherGrid.GetCellState(Cell, OutState);
+}
+
+FWeatherSample UWeatherStateSubsystem::GetWeatherAtLocation(
+	const FVector& WorldLocation) const
+{
+	return WeatherGrid.GetWeatherAtLocation(WorldLocation);
+}
+
+TArray<FWeatherCellState> UWeatherStateSubsystem::GetCellStatesForBounds(
+	const FBox& WorldBounds) const
+{
+	TArray<FWeatherCellCoord> Coordinates;
+	WeatherGrid.GetCellsIntersectingBounds(WorldBounds, Coordinates);
+
+	TArray<FWeatherCellState> States;
+	States.Reserve(Coordinates.Num());
+	for (const FWeatherCellCoord& Coordinate : Coordinates)
+	{
+		if (const FWeatherCellState* State = WeatherGrid.FindCell(Coordinate))
+		{
+			States.Add(*State);
+		}
+	}
+	return States;
 }
 
 bool UWeatherStateSubsystem::RegisterController(AWeatherEnvironmentController* Controller)

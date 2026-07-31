@@ -9,6 +9,7 @@
 #include "WeatherEnvironmentController.generated.h"
 
 class ADirectionalLight;
+class ALandscapeProxy;
 class ASkyLight;
 class UMaterialInstanceDynamic;
 class UPostProcessComponent;
@@ -31,6 +32,9 @@ public:
 
 	virtual void Tick(float DeltaSeconds) override;
 	virtual void OnConstruction(const FTransform& Transform) override;
+#if WITH_EDITOR
+	virtual bool ShouldTickIfViewportsOnly() const override;
+#endif
 
 	UFUNCTION(BlueprintCallable, Category = "Weather|Environment")
 	void RefreshEnvironment();
@@ -55,6 +59,16 @@ public:
 
 	UFUNCTION(BlueprintPure, Category = "Weather|Astronomy")
 	float GetMoonPhase() const { return CurrentMoonPhase; }
+
+	/** Rebuilds the subsystem grid in game/PIE or the transient preview grid in the editor. */
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Weather|Grid")
+	void RebuildGrid();
+
+	UFUNCTION(BlueprintCallable, CallInEditor, Category = "Weather|Grid")
+	void ClearGrid();
+
+	UFUNCTION(BlueprintPure, Category = "Weather|Grid")
+	FWeatherGridInfo GetGridInfo() const;
 
 	UPROPERTY(BlueprintAssignable, Category = "Weather|Astronomy")
 	FWeatherCelestialTransitionSignature OnSunrise;
@@ -96,6 +110,28 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Fallback")
 	FWeatherSkyboxSettings SkyboxSettings;
 
+	/** Used when EnvironmentProfile is unset. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Fallback")
+	FWeatherGridDefinition GridDefinition;
+
+	/** Explicit landscape sources. When empty, all landscape proxies in the world are discovered. */
+	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category = "Weather|Grid")
+	TArray<TObjectPtr<ALandscapeProxy>> LandscapeSources;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Grid")
+	bool bRebuildGridOnBeginPlay = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Grid|Debug")
+	FWeatherGridDebugSettings GridDebugSettings;
+
+	/** Result of the most recent automatic or manual grid rebuild. */
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Transient, Category = "Weather|Grid|Status")
+	bool bLastGridBuildSucceeded = false;
+
+	/** Includes the requested cell count when a rebuild is rejected by the safety cap. */
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Transient, Category = "Weather|Grid|Status", meta = (MultiLine = "true"))
+	FString LastGridBuildMessage = TEXT("Grid has not been built.");
+
 	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category = "Weather|References")
 	TObjectPtr<ADirectionalLight> SunLight;
 
@@ -136,6 +172,7 @@ private:
 	const FWeatherAstronomySettings& GetAstronomySettings() const;
 	const FWeatherMoonVisualSettings& GetMoonVisualSettings() const;
 	const FWeatherSkyboxSettings& GetSkyboxSettings() const;
+	const FWeatherGridDefinition& GetGridDefinition() const;
 
 	void ResolveWorldReferences();
 	void ConfigureMoonMesh();
@@ -147,6 +184,11 @@ private:
 	void UpdateSkyDomeVisual();
 	void UpdateSkyboxParameters(double DayFraction);
 	void UpdateCelestialTransitionEvents(const FWeatherDateTime& DateTime, double SunElevation);
+	bool RebuildEditorPreviewGrid();
+	const FWeatherGrid* GetGridForDebug() const;
+#if ENABLE_DRAW_DEBUG
+	void DrawWeatherGridDebug() const;
+#endif
 
 	static float SmoothRange(float Value, float Minimum, float Maximum);
 	static float CalculateMoonPhase(const FDateTime& DateTime);
@@ -159,4 +201,5 @@ private:
 	bool bHasPreviousSunState = false;
 	bool bWasSunAboveTransition = false;
 	float SkyLightRecaptureAccumulator = 0.0f;
+	FWeatherGrid EditorPreviewGrid;
 };

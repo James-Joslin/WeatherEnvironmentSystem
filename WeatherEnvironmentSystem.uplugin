@@ -1,7 +1,7 @@
 {
 	"FileVersion": 3,
-	"Version": 1,
-	"VersionName": "0.1.0",
+	"Version": 3,
+	"VersionName": "0.2.1",
 	"FriendlyName": "Weather Environment System",
 	"Description": "Map-spanning time, weather, wind, cloud, foliage, Niagara, and Ocean System integration for a stylised open world.",
 	"Category": "Environment",
