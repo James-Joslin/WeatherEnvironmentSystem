@@ -1,0 +1,86 @@
+// Copyright James Joslin. All Rights Reserved.
+
+#ifndef WEATHER_WIND_FIELD_COMMON_USH
+#define WEATHER_WIND_FIELD_COMMON_USH
+
+float4 WeatherSampleWindField(
+	Texture2D WindFieldTexture,
+	SamplerState WindFieldTextureSampler,
+	float3 WorldPosition,
+	float4 FieldOriginSize,
+	float4 LocalWind,
+	float LocalGust)
+{
+	const float2 SafeFieldSize = max(abs(FieldOriginSize.zw), float2(1.0, 1.0));
+	const float2 FieldUV = saturate((WorldPosition.xy - FieldOriginSize.xy) / SafeFieldSize);
+	const float bHasField = step(1.0, min(abs(FieldOriginSize.z), abs(FieldOriginSize.w)));
+	const float4 PackedField = Texture2DSampleLevel(
+		WindFieldTexture,
+		WindFieldTextureSampler,
+		FieldUV,
+		0.0);
+
+	float2 FieldDirection = PackedField.rg * 2.0 - 1.0;
+	const float2 FallbackDirection = dot(LocalWind.xy, LocalWind.xy) > 0.0001
+		? normalize(LocalWind.xy)
+		: float2(1.0, 0.0);
+	FieldDirection = dot(FieldDirection, FieldDirection) > 0.0001
+		? normalize(FieldDirection)
+		: FallbackDirection;
+
+	return float4(
+		lerp(FallbackDirection, FieldDirection, bHasField),
+		lerp(saturate(LocalWind.w), PackedField.b, bHasField),
+		lerp(saturate(LocalGust), PackedField.a, bHasField));
+}
+
+float3 WeatherEvaluateFoliageWind(
+	Texture2D WindFieldTexture,
+	SamplerState WindFieldTextureSampler,
+	float3 WorldPosition,
+	float3 ObjectPosition,
+	float4 VertexMask,
+	float TimeSeconds,
+	float4 FieldOriginSize,
+	float4 LocalWind,
+	float LocalGust,
+	float4 SwayParameters,
+	float4 RustleParameters)
+{
+	const float4 Wind = WeatherSampleWindField(
+		WindFieldTexture,
+		WindFieldTextureSampler,
+		WorldPosition,
+		FieldOriginSize,
+		LocalWind,
+		LocalGust);
+	const float2 Direction = Wind.xy;
+	const float Speed = Wind.z;
+	const float Gust = Wind.w;
+
+	// Sway: X trunk amplitude, Y branch amplitude, Z frequency, W height-to-full-bend.
+	const float HeightMask = saturate(
+		(WorldPosition.z - ObjectPosition.z) / max(abs(SwayParameters.w), 1.0));
+	const float SpatialPhase = dot(WorldPosition.xy, float2(0.000071, 0.000113));
+	const float SwayPhase = TimeSeconds * max(SwayParameters.z, 0.0) * 6.2831853 + SpatialPhase;
+	const float Trunk = sin(SwayPhase) * SwayParameters.x * HeightMask * (0.25 + Speed);
+	const float Branch = sin(SwayPhase * 1.73 + 1.1)
+		* SwayParameters.y
+		* saturate(VertexMask.r)
+		* HeightMask
+		* (0.25 + Speed);
+
+	// Rustle: X amplitude, Y frequency, Z spatial wavelength, W vertical fraction.
+	const float RustlePhase = TimeSeconds * max(RustleParameters.y, 0.0) * 6.2831853
+		+ dot(WorldPosition.xy, float2(0.83, 1.27)) / max(abs(RustleParameters.z), 1.0);
+	const float Rustle = sin(RustlePhase)
+		* RustleParameters.x
+		* saturate(VertexMask.a)
+		* (0.2 + Gust);
+	const float PlanarDisplacement = Trunk + Branch + Rustle;
+	return float3(
+		Direction * PlanarDisplacement,
+		Rustle * RustleParameters.w);
+}
+
+#endif
