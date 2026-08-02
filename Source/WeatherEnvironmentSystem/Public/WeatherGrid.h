@@ -77,6 +77,10 @@ struct WEATHERENVIRONMENTSYSTEM_API FWeatherCellState
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather", meta = (Units = "cm/s"))
 	FVector WindVector = FVector(500.0, 0.0, 0.0);
 
+	/** Normalized instantaneous gust contribution used by foliage and field-texture alpha. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float WindGust = 0.0f;
+
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float CloudCoverage = 0.0f;
 
@@ -281,6 +285,7 @@ public:
 	const FWeatherGridDefinition& GetDefinition() const { return GridDefinition; }
 	const FWeatherGridInfo& GetInfo() const { return GridInfo; }
 	const TArray<FWeatherCellState>& GetCells() const { return Cells; }
+	TArray<FWeatherCellState>& GetMutableCells() { return Cells; }
 
 	static bool ResolveSourceBounds(
 		UWorld* World,

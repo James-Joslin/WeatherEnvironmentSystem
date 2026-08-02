@@ -50,7 +50,7 @@ float3 WeatherEvaluateFoliageWind(
 	const float4 Wind = WeatherSampleWindField(
 		WindFieldTexture,
 		WindFieldTextureSampler,
-		WorldPosition,
+		ObjectPosition,
 		FieldOriginSize,
 		LocalWind,
 		LocalGust);

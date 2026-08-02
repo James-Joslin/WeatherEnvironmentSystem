@@ -314,7 +314,38 @@ FVector FWeatherWindMath::SmoothWind(
 	}
 
 	const float Alpha = 1.0f - FMath::Exp(-SmoothingRate * DeltaSeconds);
-	return FMath::Lerp(PreviousWind, TargetWind, FMath::Clamp(Alpha, 0.0f, 1.0f));
+	const float ClampedAlpha = FMath::Clamp(Alpha, 0.0f, 1.0f);
+	const float PreviousSpeed = PreviousWind.Size2D();
+	const float TargetSpeed = TargetWind.Size2D();
+	const float SmoothedSpeed = FMath::Lerp(PreviousSpeed, TargetSpeed, ClampedAlpha);
+
+	// Interpolating complete vectors makes an approximately 180-degree turn pass
+	// through zero. Normalizing that result for the field texture then holds the
+	// old direction until one update suddenly flips to the new direction. Smooth
+	// the planar angle and magnitude independently so even an opposite turn has a
+	// continuous, non-zero direction for foliage WPO.
+	FVector SmoothedDirection = FVector::ForwardVector;
+	if (PreviousSpeed > UE_SMALL_NUMBER && TargetSpeed > UE_SMALL_NUMBER)
+	{
+		const float PreviousAngle = FMath::Atan2(PreviousWind.Y, PreviousWind.X);
+		const float TargetAngle = FMath::Atan2(TargetWind.Y, TargetWind.X);
+		const float AngleDelta = FMath::UnwindRadians(TargetAngle - PreviousAngle);
+		const float SmoothedAngle = PreviousAngle + AngleDelta * ClampedAlpha;
+		SmoothedDirection = FVector(FMath::Cos(SmoothedAngle), FMath::Sin(SmoothedAngle), 0.0f);
+	}
+	else if (TargetSpeed > UE_SMALL_NUMBER)
+	{
+		SmoothedDirection = FVector(TargetWind.X, TargetWind.Y, 0.0f) / TargetSpeed;
+	}
+	else if (PreviousSpeed > UE_SMALL_NUMBER)
+	{
+		SmoothedDirection = FVector(PreviousWind.X, PreviousWind.Y, 0.0f) / PreviousSpeed;
+	}
+
+	return FVector(
+		SmoothedDirection.X * SmoothedSpeed,
+		SmoothedDirection.Y * SmoothedSpeed,
+		FMath::Lerp(PreviousWind.Z, TargetWind.Z, ClampedAlpha));
 }
 
 FVector2D FWeatherWindMath::WorldToFieldUV(
@@ -396,4 +427,44 @@ FWeatherFoliageMaterialState FWeatherWindMath::BuildFoliageMaterialState(
 		Settings.WindSwayAxisVertical,
 		0.0f);
 	return Result;
+}
+
+FWeatherFoliageSpatialMaterialState FWeatherWindMath::BuildFoliageSpatialMaterialState(
+	const float MaximumWindSpeed,
+	const FWeatherFoliageMaterialSettings& Settings)
+{
+	FWeatherFoliageSpatialMaterialState Result;
+	Result.Mapping = FLinearColor(
+		FMath::Max(MaximumWindSpeed, 1.0f) / FMath::Max(Settings.ReferenceWindSpeed, 1.0f),
+		FMath::Max(Settings.GustAnimationResponse, 0.0f),
+		Settings.WindSwayAxisHorizontal,
+		Settings.WindSwayAxisVertical);
+	Result.Base = FLinearColor(
+		FMath::Max(Settings.SimpleWindIntensity, 0.0f),
+		FMath::Max(Settings.SimpleWindSpeed, 0.0f),
+		FMath::Max(Settings.WindSwayIntensity, 0.0f),
+		FMath::Max(Settings.WindSwayGustFrequency, 0.0f));
+	Result.GustBase = FLinearColor(
+		Settings.GrassWindSmallAmplification,
+		Settings.GrassWindLargeAmplification,
+		FMath::Max(Settings.GrassWindSmallSize, 1.0f),
+		FMath::Max(Settings.GrassWindLargeSize, 1.0f));
+	return Result;
+}
+
+FVector2D FWeatherWindMath::EvaluateFoliageSpatialScales(
+	const float NormalizedWindSpeed,
+	const float Gust,
+	const FLinearColor& Mapping)
+{
+	const float SpeedScale = FMath::Clamp(
+		FMath::Max(NormalizedWindSpeed, 0.0f) * FMath::Max(Mapping.R, 0.0f),
+		0.0f,
+		4.0f);
+	(void)Gust;
+	// The established material functions multiply their speed/frequency input by
+	// absolute material time. Varying that input with the sampled field changes
+	// the complete historical phase and produces a visible WPO jump. Keep their
+	// authored rate phase-stable; local wind and gust still drive displacement.
+	return FVector2D(SpeedScale, 1.0f);
 }

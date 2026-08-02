@@ -1,6 +1,6 @@
 # Weather Environment System — in-engine setup guide
 
-This guide covers the functionality currently implemented in Stage 1 of the Weather Environment System plugin:
+This guide covers the clock and sky setup introduced in Stage 1 of the Weather Environment System plugin. Stages 2 and 3 additionally provide:
 
 - persistent session clock with pause and time scaling;
 - astronomical sun and moon directions;
@@ -8,8 +8,11 @@ This guide covers the functionality currently implemented in Stage 1 of the Weat
 - an orbiting moon static mesh;
 - a controller-managed, four-cubemap opaque sky dome with per-layer grading;
 - Blueprint-readable clock, astronomy values, and transition events.
+- a landscape/manual-bounds weather grid and debug view;
+- a movable or routed wind director;
+- a shared wind field and foliage material function.
 
-The landscape weather grid, wind field, foliage response, precipitation, local volumetric clouds, and Ocean System bridge belong to later stages and are not available yet.
+For grid, wind director, and foliage setup, continue with [WIND_FOLIAGE_SETUP.md](WIND_FOLIAGE_SETUP.md). Precipitation, weather fronts, local volumetric clouds, and the Ocean System bridge belong to later stages.
 
 ## Sky material: short answer
 
@@ -220,13 +223,15 @@ Run these checks in PIE or Standalone:
 - Opening an interior level and returning with the same GameInstance does not reset the clock.
 - No legacy custom-sky blendable is active.
 
-The Stage 1 automation tests appear under:
+Automation tests for the implemented stages appear under:
 
 ```text
 WeatherEnvironment.Stage1
+WeatherEnvironment.Stage2
+WeatherEnvironment.Stage3
 ```
 
-Open **Tools > Test Automation**, filter for that prefix, and run the clock and astronomy tests.
+Open **Tools > Test Automation**, filter for `WeatherEnvironment`, and run the complete suite.
 
 ## 10. Troubleshooting
 

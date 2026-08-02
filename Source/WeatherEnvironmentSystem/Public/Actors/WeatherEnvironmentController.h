@@ -11,6 +11,7 @@
 class ADirectionalLight;
 class ALandscapeProxy;
 class ASkyLight;
+class AWeatherWindDirector;
 class UMaterialInstanceDynamic;
 class UPostProcessComponent;
 class USceneComponent;
@@ -70,6 +71,12 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Weather|Grid")
 	FWeatherGridInfo GetGridInfo() const;
 
+	UFUNCTION(BlueprintCallable, Category = "Weather|Wind")
+	void SetWindDirector(AWeatherWindDirector* NewWindDirector);
+
+	UFUNCTION(BlueprintPure, Category = "Weather|Wind")
+	bool GetWindAtLocation(const FVector& WorldLocation, FVector& OutWindVector, float& OutGust) const;
+
 	UPROPERTY(BlueprintAssignable, Category = "Weather|Astronomy")
 	FWeatherCelestialTransitionSignature OnSunrise;
 
@@ -114,6 +121,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Fallback")
 	FWeatherGridDefinition GridDefinition;
 
+	/** Used when EnvironmentProfile is unset. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Fallback")
+	FWeatherWindSettings WindSettings;
+
 	/** Explicit landscape sources. When empty, all landscape proxies in the world are discovered. */
 	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category = "Weather|Grid")
 	TArray<TObjectPtr<ALandscapeProxy>> LandscapeSources;
@@ -141,12 +152,18 @@ public:
 	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category = "Weather|References")
 	TObjectPtr<ASkyLight> SkyLight;
 
+	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category = "Weather|References")
+	TObjectPtr<AWeatherWindDirector> WindDirector;
+
 	/** Explicit orbit center overrides player-camera centering. */
 	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category = "Weather|References")
 	TObjectPtr<AActor> MoonOrbitCenter;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|References")
 	bool bAutoDiscoverLights = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|References")
+	bool bAutoDiscoverWindDirector = true;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weather|Runtime")
 	FVector CurrentSunDirection = FVector::UpVector;
@@ -173,6 +190,7 @@ private:
 	const FWeatherMoonVisualSettings& GetMoonVisualSettings() const;
 	const FWeatherSkyboxSettings& GetSkyboxSettings() const;
 	const FWeatherGridDefinition& GetGridDefinition() const;
+	const FWeatherWindSettings& GetWindSettings() const;
 
 	void ResolveWorldReferences();
 	void ConfigureMoonMesh();
@@ -185,6 +203,7 @@ private:
 	void UpdateSkyboxParameters(double DayFraction);
 	void UpdateCelestialTransitionEvents(const FWeatherDateTime& DateTime, double SunElevation);
 	bool RebuildEditorPreviewGrid();
+	void UpdateEditorPreviewWind(float DeltaSeconds, bool bForce);
 	const FWeatherGrid* GetGridForDebug() const;
 #if ENABLE_DRAW_DEBUG
 	void DrawWeatherGridDebug() const;
@@ -201,5 +220,7 @@ private:
 	bool bHasPreviousSunState = false;
 	bool bWasSunAboveTransition = false;
 	float SkyLightRecaptureAccumulator = 0.0f;
+	double EditorWindSimulationTimeSeconds = 0.0;
+	float EditorWindSimulationAccumulator = 0.0f;
 	FWeatherGrid EditorPreviewGrid;
 };

@@ -1,10 +1,10 @@
 # Weather Environment System
 
-Weather Environment System is a standalone Unreal Engine 5.7 plugin for the game's world clock, astronomical day/night cycle, moon visual, stylised sky, and the planned map-spanning weather simulation. It remains separate from `OceanSystemPlugin` and `PCGExtensionsFeoul`.
+Weather Environment System is a standalone Unreal Engine 5.7 plugin for the game's world clock, astronomical day/night cycle, moon visual, stylised sky, landscape weather grid, and wind-driven foliage. It remains separate from `OceanSystemPlugin` and `PCGExtensionsFeoul`.
 
 ## Current implementation
 
-Stage 1 currently provides:
+Version 0.3.0 currently provides Stages 1–3:
 
 - a persistent session clock owned by `WeatherStateSubsystem`;
 - configurable time scale, pause, date, and time controls;
@@ -15,8 +15,14 @@ Stage 1 currently provides:
 - a camera-centred Opaque/Unlit/Is Sky dome;
 - four independently graded sky cubemaps;
 - Blueprint-readable time and astronomy values.
+- a deterministic, landscape-spanning CPU weather grid with constant-time point queries;
+- editor/PIE grid, influence-sphere, label, and exact wind-vector debug drawing;
+- a movable wind director with manual, once, loop, and ping-pong route behavior;
+- fixed-step direction, speed, curl, gust, dead-zone, and exponential smoothing logic;
+- a shared wind field texture plus player-local MPC fallbacks;
+- `MF_WeatherFoliageWind` for separate trunk/branch sway and leaf rustle without per-instance MID updates.
 
-The weather grid, wind field, foliage response, precipitation, local volumetric clouds, and Ocean System integration are later milestones. See [WEATHER_ENVIRONMENT_IMPLEMENTATION_PLAN.md](WEATHER_ENVIRONMENT_IMPLEMENTATION_PLAN.md) for the complete staged plan.
+Precipitation, local volumetric clouds, weather-front seeds/classification, and Ocean System integration are later milestones. See the repository-level implementation plan for the complete staged plan.
 
 ## Initial Unreal setup
 
@@ -46,6 +52,7 @@ For the complete level and material instructions, see:
 - [IN_ENGINE_SETUP_GUIDE.md](IN_ENGINE_SETUP_GUIDE.md)
 - [SKY_DOME_SETUP.md](SKY_DOME_SETUP.md)
 - [CUSTOM_SKYBOX_MATERIAL_SETUP.md](CUSTOM_SKYBOX_MATERIAL_SETUP.md) — legacy fallback only
+- [WIND_FOLIAGE_SETUP.md](WIND_FOLIAGE_SETUP.md)
 
 ## Blueprint clock and Widget UI
 
@@ -146,10 +153,12 @@ The runtime module may consume Ocean System APIs in later stages. Dependency dir
 
 ## Automated tests
 
-Stage 1 tests are registered under:
+Stage tests are registered under:
 
 ```text
 WeatherEnvironment.Stage1
+WeatherEnvironment.Stage2
+WeatherEnvironment.Stage3
 ```
 
-Open **Tools > Test Automation**, filter for that prefix, and run the clock and astronomy tests.
+Open **Tools > Test Automation**, filter for `WeatherEnvironment`, and run the clock, astronomy, grid, wind-route, and field-mapping tests.

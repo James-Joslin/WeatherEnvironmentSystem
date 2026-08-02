@@ -53,7 +53,7 @@ struct WEATHERENVIRONMENTSYSTEM_API FWeatherFoliageMaterialSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage|Tree Sway")
 	float WindSwayOffset = 0.992f;
 
-	/** Adds animation-rate response to the local normalized gust without changing mask/fade math. */
+	/** Adds animation-rate response for compatibility-only consumers. Migrated spatial legacy graphs keep authored rates phase-stable. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Foliage", meta = (ClampMin = "0.0"))
 	float GustAnimationResponse = 0.25f;
 
@@ -155,7 +155,7 @@ struct WEATHERENVIRONMENTSYSTEM_API FWeatherWindSettings
 
 	/** Authoritative grid wind updates use this fixed real-time cadence. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind", meta = (ClampMin = "0.01", Units = "s"))
-	float FixedUpdateIntervalSeconds = 1.0f;
+	float FixedUpdateIntervalSeconds = 1.0f / 30.0f;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Wind", meta = (ClampMin = "0.0", Units = "cm/s"))
 	float BaseWindSpeed = 500.0f;
@@ -229,6 +229,19 @@ struct WEATHERENVIRONMENTSYSTEM_API FWeatherFoliageMaterialState
 	FLinearColor WindSwayDirection = FLinearColor(0.0f, 0.947775f, 1.0f, 0.0f);
 };
 
+/** Uniform values used to evaluate the legacy foliage response at a spatial field sample. */
+struct WEATHERENVIRONMENTSYSTEM_API FWeatherFoliageSpatialMaterialState
+{
+	/** X maximum/reference speed, Y reserved gust response, Z/W sway-axis horizontal/vertical. */
+	FLinearColor Mapping = FLinearColor(4.0f, 0.25f, 0.947775f, 1.0f);
+
+	/** X/Y simple-wind intensity/speed, Z/W tree-sway intensity/frequency. */
+	FLinearColor Base = FLinearColor(0.75f, 0.4f, 1.0f, 0.2f);
+
+	/** X/Y small/large gust amplitude, Z/W small/large wavelength. */
+	FLinearColor GustBase = FLinearColor(-70.0f, -150.0f, 1024.0f, 2000.0f);
+};
+
 /** Pure route math shared by the actor and automation tests. */
 class WEATHERENVIRONMENTSYSTEM_API FWeatherWindRouteSolver
 {
@@ -292,4 +305,12 @@ public:
 		float WindSpeed,
 		float Gust,
 		const FWeatherFoliageMaterialSettings& Settings);
+	static FWeatherFoliageSpatialMaterialState BuildFoliageSpatialMaterialState(
+		float MaximumWindSpeed,
+		const FWeatherFoliageMaterialSettings& Settings);
+	/** Returns X displacement scale and Y animation scale, matching MF_WeatherWindSample. */
+	static FVector2D EvaluateFoliageSpatialScales(
+		float NormalizedWindSpeed,
+		float Gust,
+		const FLinearColor& Mapping);
 };
