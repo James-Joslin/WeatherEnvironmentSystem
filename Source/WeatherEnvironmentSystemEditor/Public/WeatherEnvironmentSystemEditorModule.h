@@ -15,7 +15,11 @@ public:
 private:
 	void GenerateSkyboxMaterial();
 	void GenerateSkyDomeMaterial();
+	void GenerateWindMaterialAssets();
+	void RetargetLegacyFoliageMaterials();
 
 	IConsoleObject* GenerateSkyboxMaterialCommand = nullptr;
 	IConsoleObject* GenerateSkyDomeMaterialCommand = nullptr;
+	IConsoleObject* GenerateWindMaterialAssetsCommand = nullptr;
+	IConsoleObject* RetargetLegacyFoliageMaterialsCommand = nullptr;
 };
