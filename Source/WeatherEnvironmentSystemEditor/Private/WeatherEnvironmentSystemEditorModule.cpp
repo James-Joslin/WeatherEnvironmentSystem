@@ -708,6 +708,15 @@ namespace WeatherLegacyFoliageIntegration
 	constexpr TCHAR MainWorldWeatherProfilePath[] =
 		TEXT("/Game/Level_Building/Weather/DA_MainWorld_WeatherEnvironment.DA_MainWorld_WeatherEnvironment");
 	constexpr float SpatialFoliageWindCadence = 1.0f / 30.0f;
+	constexpr TCHAR PhaseStableGustOrientationCode[] =
+		TEXT(
+			"const float2 D = dot(Direction, Direction) > 0.0001\n"
+			"    ? normalize(Direction) : float2(1.0, 0.0);\n"
+			"const float2 Perpendicular = float2(-D.y, D.x);\n"
+			"// MF_GustingWind is scalar in some grass static permutations. An explicit\n"
+			"// promotion preserves scalar splatting while making every swizzle valid.\n"
+			"const float3 WPO = OriginalWPO + float3(0.0, 0.0, 0.0);\n"
+			"return float3(D * WPO.x + Perpendicular * WPO.y, WPO.z);");
 
 	int32 UpgradeMainWorldWindCadence()
 	{
@@ -1199,15 +1208,16 @@ namespace WeatherLegacyFoliageIntegration
 			Orient->Desc = TEXT("Weather spatial gust-wind orientation (generated)");
 			Orient->Description = TEXT("Rotate phase-stable gust WPO into the local weather direction");
 			Orient->OutputType = CMOT_Float3;
-			Orient->Code = TEXT(
-				"const float2 D = dot(Direction, Direction) > 0.0001\n"
-				"    ? normalize(Direction) : float2(1.0, 0.0);\n"
-				"const float2 Perpendicular = float2(-D.y, D.x);\n"
-				"return float3(D * OriginalWPO.x + Perpendicular * OriginalWPO.y, OriginalWPO.z);");
+			Orient->Code = PhaseStableGustOrientationCode;
 			WeatherSkyboxMaterial::AddCustomInput(
 				Orient, TEXT("OriginalWPO"), OriginalWpo, OriginalWpoOutputIndex);
 			WeatherSkyboxMaterial::AddCustomInput(Orient, TEXT("Direction"), Sample, DirectionOutput);
 			Output->A.Connect(0, Orient);
+			++Changes;
+		}
+		else if (ExistingOrientation->Code != PhaseStableGustOrientationCode)
+		{
+			ExistingOrientation->Code = PhaseStableGustOrientationCode;
 			++Changes;
 		}
 		return Changes;
@@ -1695,7 +1705,9 @@ void FWeatherEnvironmentSystemEditorModule::ValidateSpatialFoliageMaterials()
 			if (UMaterialExpressionCustom* Custom = Cast<UMaterialExpressionCustom>(Expression))
 			{
 				PhaseStableGustOrientations +=
-					Custom->Desc == TEXT("Weather spatial gust-wind orientation (generated)") ? 1 : 0;
+					Custom->Desc == TEXT("Weather spatial gust-wind orientation (generated)")
+						&& Custom->Code == PhaseStableGustOrientationCode
+					? 1 : 0;
 			}
 		}
 
