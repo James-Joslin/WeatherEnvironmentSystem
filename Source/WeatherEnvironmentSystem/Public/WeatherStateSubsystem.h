@@ -7,10 +7,14 @@
 #include "Tickable.h"
 #include "WeatherDateTime.h"
 #include "WeatherGrid.h"
+#include "WeatherWind.h"
 #include "WeatherStateSubsystem.generated.h"
 
 class AWeatherEnvironmentController;
+class AWeatherWindDirector;
 class ALandscapeProxy;
+class UMaterialParameterCollection;
+class UTexture2D;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(
 	FWeatherDateTimeChangedSignature,
@@ -110,6 +114,29 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Weather|Grid")
 	FString GetLastGridBuildMessage() const { return LastGridBuildMessage; }
 
+	/** Applies cadence, speed, noise, gust, texture, and MPC settings without rebuilding the grid. */
+	UFUNCTION(BlueprintCallable, Category = "Weather|Wind")
+	void ConfigureWind(const FWeatherWindSettings& Settings);
+
+	UFUNCTION(BlueprintCallable, Category = "Weather|Wind")
+	void SetWindDirector(AWeatherWindDirector* NewWindDirector);
+
+	UFUNCTION(BlueprintPure, Category = "Weather|Wind")
+	AWeatherWindDirector* GetWindDirector() const;
+
+	UFUNCTION(BlueprintCallable, Category = "Weather|Wind")
+	void ForceWindUpdate();
+
+	UFUNCTION(BlueprintPure, Category = "Weather|Wind")
+	bool GetWindAtLocation(const FVector& WorldLocation, FVector& OutWindVector, float& OutGust) const;
+
+	UFUNCTION(BlueprintPure, Category = "Weather|Wind")
+	UTexture2D* GetWindFieldTexture() const { return WindFieldTexture; }
+
+	/** XY is field world origin, ZW is complete field world size. */
+	UFUNCTION(BlueprintPure, Category = "Weather|Wind")
+	FLinearColor GetWindFieldOriginSize() const;
+
 	UPROPERTY(BlueprintAssignable, Category = "Weather|Clock")
 	FWeatherDateTimeChangedSignature OnMinuteChanged;
 
@@ -131,6 +158,11 @@ public:
 private:
 	void SetNativeDateTime(const FDateTime& NewDateTime, bool bBroadcastBoundaries);
 	void BroadcastBoundaryChanges(const FDateTime& Previous, const FDateTime& Current);
+	void TickWind(float DeltaTime);
+	void StepWind(float StepSeconds);
+	void EnsureWindFieldTexture();
+	void UpdateWindFieldTexture();
+	void PublishWindMaterialParameters();
 
 	FDateTime CurrentDateTime = FDateTime(2026, 6, 21, 8, 0, 0);
 	double TimeScale = 60.0;
@@ -139,6 +171,20 @@ private:
 	FWeatherGrid WeatherGrid;
 	bool bLastGridBuildSucceeded = false;
 	FString LastGridBuildMessage = TEXT("Grid has not been built.");
+	FWeatherWindSettings WindSettings;
+	double WindSimulationTimeSeconds = 0.0;
+	float WindSimulationAccumulator = 0.0f;
+	bool bWindConfigured = false;
+	bool bWindFieldDirty = false;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UTexture2D> WindFieldTexture;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UMaterialParameterCollection> WindMaterialParameterCollection;
+
+	TArray<FColor> LastWindFieldPixels;
+	TWeakObjectPtr<AWeatherWindDirector> WindDirector;
 
 	TWeakObjectPtr<AWeatherEnvironmentController> ActiveController;
 };

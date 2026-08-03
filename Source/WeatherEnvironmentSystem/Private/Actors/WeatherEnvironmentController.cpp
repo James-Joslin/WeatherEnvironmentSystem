@@ -2,6 +2,7 @@
 
 #include "Actors/WeatherEnvironmentController.h"
 
+#include "Actors/WeatherWindDirector.h"
 #include "Components/DirectionalLightComponent.h"
 #include "Components/PostProcessComponent.h"
 #include "Components/SceneComponent.h"
@@ -95,12 +96,14 @@ void AWeatherEnvironmentController::BeginPlay()
 	bControllerRegistered = true;
 	WeatherStateSubsystem = StateSubsystem;
 	StateSubsystem->InitializeClock(GetClockSettings(), false);
+	ResolveWorldReferences();
 	if (bRebuildGridOnBeginPlay)
 	{
 		RebuildGrid();
 	}
+	StateSubsystem->ConfigureWind(GetWindSettings());
+	StateSubsystem->SetWindDirector(WindDirector);
 
-	ResolveWorldReferences();
 	ConfigureMoonMesh();
 	ConfigureSkyDomeMesh();
 	InitializeSkyboxMID();
@@ -111,6 +114,10 @@ void AWeatherEnvironmentController::EndPlay(const EEndPlayReason::Type EndPlayRe
 {
 	if (bControllerRegistered && WeatherStateSubsystem.IsValid())
 	{
+		if (WeatherStateSubsystem->GetWindDirector() == WindDirector)
+		{
+			WeatherStateSubsystem->SetWindDirector(nullptr);
+		}
 		WeatherStateSubsystem->UnregisterController(this);
 	}
 
@@ -132,6 +139,10 @@ void AWeatherEnvironmentController::Tick(const float DeltaSeconds)
 	{
 		UpdateEnvironment(DeltaSeconds, false);
 	}
+	else if (GetWorld() && !GetWorld()->IsGameWorld())
+	{
+		UpdateEditorPreviewWind(DeltaSeconds, false);
+	}
 
 #if ENABLE_DRAW_DEBUG
 	DrawWeatherGridDebug();
@@ -151,6 +162,7 @@ void AWeatherEnvironmentController::OnConstruction(const FTransform& Transform)
 	if (GetWorld() && !GetWorld()->IsGameWorld())
 	{
 		RebuildEditorPreviewGrid();
+		UpdateEditorPreviewWind(0.0f, true);
 	}
 }
 
@@ -167,6 +179,11 @@ void AWeatherEnvironmentController::RefreshEnvironment()
 	ConfigureMoonMesh();
 	ConfigureSkyDomeMesh();
 	InitializeSkyboxMID();
+	if (UWeatherStateSubsystem* StateSubsystem = GetWeatherStateSubsystem())
+	{
+		StateSubsystem->ConfigureWind(GetWindSettings());
+		StateSubsystem->SetWindDirector(WindDirector);
+	}
 	UpdateEnvironment(0.0f, true);
 }
 
@@ -206,6 +223,11 @@ const FWeatherSkyboxSettings& AWeatherEnvironmentController::GetSkyboxSettings()
 const FWeatherGridDefinition& AWeatherEnvironmentController::GetGridDefinition() const
 {
 	return EnvironmentProfile ? EnvironmentProfile->Grid : GridDefinition;
+}
+
+const FWeatherWindSettings& AWeatherEnvironmentController::GetWindSettings() const
+{
+	return EnvironmentProfile ? EnvironmentProfile->Wind : WindSettings;
 }
 
 void AWeatherEnvironmentController::RebuildGrid()
@@ -257,6 +279,39 @@ FWeatherGridInfo AWeatherEnvironmentController::GetGridInfo() const
 {
 	const FWeatherGrid* Grid = GetGridForDebug();
 	return Grid ? Grid->GetInfo() : FWeatherGridInfo();
+}
+
+void AWeatherEnvironmentController::SetWindDirector(AWeatherWindDirector* NewWindDirector)
+{
+	WindDirector = NewWindDirector;
+	if (UWeatherStateSubsystem* StateSubsystem = GetWeatherStateSubsystem())
+	{
+		StateSubsystem->SetWindDirector(NewWindDirector);
+	}
+	UpdateEditorPreviewWind(0.0f, true);
+}
+
+bool AWeatherEnvironmentController::GetWindAtLocation(
+	const FVector& WorldLocation,
+	FVector& OutWindVector,
+	float& OutGust) const
+{
+	if (const UWeatherStateSubsystem* StateSubsystem = GetWeatherStateSubsystem())
+	{
+		return StateSubsystem->GetWindAtLocation(WorldLocation, OutWindVector, OutGust);
+	}
+
+	const FWeatherSample Sample = EditorPreviewGrid.GetWeatherAtLocation(WorldLocation);
+	if (!Sample.bIsValid)
+	{
+		OutWindVector = FVector::ZeroVector;
+		OutGust = 0.0f;
+		return false;
+	}
+
+	OutWindVector = Sample.State.WindVector;
+	OutGust = Sample.State.WindGust;
+	return true;
 }
 
 bool AWeatherEnvironmentController::RebuildEditorPreviewGrid()
@@ -313,7 +368,68 @@ bool AWeatherEnvironmentController::RebuildEditorPreviewGrid()
 			*GetName(),
 			*Message);
 	}
+	else
+	{
+		UpdateEditorPreviewWind(0.0f, true);
+	}
 	return bBuilt;
+}
+
+void AWeatherEnvironmentController::UpdateEditorPreviewWind(
+	const float DeltaSeconds,
+	const bool bForce)
+{
+	if (!EditorPreviewGrid.GetInfo().bIsValid || !GetWindSettings().bEnabled)
+	{
+		return;
+	}
+
+	const FWeatherWindSettings& Settings = GetWindSettings();
+	const float Interval = FMath::Max(Settings.FixedUpdateIntervalSeconds, 0.01f);
+	int32 Steps = bForce ? 1 : 0;
+	if (!bForce)
+	{
+		EditorWindSimulationAccumulator += FMath::Max(DeltaSeconds, 0.0f);
+		Steps = FMath::Min(FMath::FloorToInt(EditorWindSimulationAccumulator / Interval), 4);
+		EditorWindSimulationAccumulator -= Steps * Interval;
+	}
+
+	const AWeatherWindDirector* Director = IsValid(WindDirector) ? WindDirector.Get() : nullptr;
+	const FVector DefaultDirection = FVector(
+		Settings.DefaultDirection.X,
+		Settings.DefaultDirection.Y,
+		0.0).GetSafeNormal(UE_SMALL_NUMBER, FVector::ForwardVector);
+	for (int32 StepIndex = 0; StepIndex < Steps; ++StepIndex)
+	{
+		EditorWindSimulationTimeSeconds += Interval;
+		for (FWeatherCellState& State : EditorPreviewGrid.GetMutableCells())
+		{
+			const FVector DirectorLocation = Director
+				? Director->GetActorLocation()
+				: State.WorldCenter + DefaultDirection * FMath::Max(Settings.DirectorDeadZoneRadius + 1.0f, 1.0f);
+			float TargetGust = 0.0f;
+			const FVector TargetWind = FWeatherWindMath::CalculateTargetWind(
+				State.WorldCenter,
+				DirectorLocation,
+				Director ? Director->GetActorForwardVector() : DefaultDirection,
+				State.WindVector,
+				EditorWindSimulationTimeSeconds,
+				Settings,
+				TargetGust);
+			State.WindVector = FWeatherWindMath::SmoothWind(
+				State.WindVector,
+				TargetWind,
+				Interval,
+				Settings.DirectionSmoothingRate);
+			const float GustAlpha = Settings.DirectionSmoothingRate <= 0.0f
+				? 1.0f
+				: 1.0f - FMath::Exp(-Settings.DirectionSmoothingRate * Interval);
+			State.WindGust = FMath::Lerp(
+				State.WindGust,
+				TargetGust,
+				FMath::Clamp(GustAlpha, 0.0f, 1.0f));
+		}
+	}
 }
 
 const FWeatherGrid* AWeatherEnvironmentController::GetGridForDebug() const
@@ -509,7 +625,33 @@ void AWeatherEnvironmentController::DrawWeatherGridDebug() const
 
 void AWeatherEnvironmentController::ResolveWorldReferences()
 {
-	if (!bAutoDiscoverLights || !GetWorld())
+	if (!GetWorld())
+	{
+		return;
+	}
+
+	if (bAutoDiscoverWindDirector && !WindDirector)
+	{
+		AWeatherWindDirector* FirstDirector = nullptr;
+		for (TActorIterator<AWeatherWindDirector> It(GetWorld()); It; ++It)
+		{
+			if (!FirstDirector)
+			{
+				FirstDirector = *It;
+			}
+			if (It->ActorHasTag(TEXT("WeatherWindDirector")))
+			{
+				WindDirector = *It;
+				break;
+			}
+		}
+		if (!WindDirector)
+		{
+			WindDirector = FirstDirector;
+		}
+	}
+
+	if (!bAutoDiscoverLights)
 	{
 		return;
 	}

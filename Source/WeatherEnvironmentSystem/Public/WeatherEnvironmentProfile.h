@@ -6,6 +6,7 @@
 #include "Engine/DataAsset.h"
 #include "WeatherDateTime.h"
 #include "WeatherGrid.h"
+#include "WeatherWind.h"
 #include "WeatherEnvironmentProfile.generated.h"
 
 class UCurveFloat;
@@ -258,6 +259,10 @@ class WEATHERENVIRONMENTSYSTEM_API UWeatherEnvironmentProfile : public UDataAsse
 public:
 	UWeatherEnvironmentProfile();
 
+	/** Schema version for explicit future migrations. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Version")
+	int32 DataVersion = 3;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weather")
 	FWeatherClockSettings Clock;
 
@@ -272,4 +277,7 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weather")
 	FWeatherGridDefinition Grid;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weather")
+	FWeatherWindSettings Wind;
 };

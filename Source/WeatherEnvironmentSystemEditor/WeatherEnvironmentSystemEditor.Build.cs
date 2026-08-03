@@ -21,6 +21,7 @@ public class WeatherEnvironmentSystemEditor : ModuleRules
 			"Engine",
 			"MaterialEditor",
 			"Projects",
+			"RHI",
 			"UnrealEd"
 		});
 	}
