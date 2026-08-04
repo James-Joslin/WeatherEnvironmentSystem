@@ -279,6 +279,12 @@ public:
 	FWeatherCellState* FindMutableCell(const FWeatherCellCoord& Cell);
 	const FWeatherCellState* FindCell(const FWeatherCellCoord& Cell) const;
 	FBox GetCellBounds(const FWeatherCellCoord& Cell) const;
+	/** Spatially interpolates continuous fields while retaining categorical state from the containing cell. */
+	FWeatherSample GetWeatherAtLocationBilinear(const FVector& WorldLocation) const;
+	/** C++ snapshot overload used to interpolate between completed fixed simulation steps. */
+	FWeatherSample GetWeatherAtLocationBilinear(
+		const FVector& WorldLocation,
+		const TArray<FWeatherCellState>& CellSnapshot) const;
 	FWeatherSample GetWeatherAtLocation(const FVector& WorldLocation) const;
 	void GetCellsIntersectingBounds(const FBox& WorldBounds, TArray<FWeatherCellCoord>& OutCells) const;
 
