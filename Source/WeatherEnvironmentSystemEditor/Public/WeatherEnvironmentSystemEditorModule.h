@@ -18,10 +18,12 @@ private:
 	void GenerateWindMaterialAssets();
 	void RetargetLegacyFoliageMaterials();
 	void ValidateSpatialFoliageMaterials();
+	void RegisterComponentVisualizers();
 
 	IConsoleObject* GenerateSkyboxMaterialCommand = nullptr;
 	IConsoleObject* GenerateSkyDomeMaterialCommand = nullptr;
 	IConsoleObject* GenerateWindMaterialAssetsCommand = nullptr;
 	IConsoleObject* RetargetLegacyFoliageMaterialsCommand = nullptr;
 	IConsoleObject* ValidateSpatialFoliageMaterialsCommand = nullptr;
+	bool bComponentVisualizersRegistered = false;
 };
