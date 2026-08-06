@@ -3,12 +3,16 @@
 #include "WeatherEnvironmentSystemEditorModule.h"
 
 #include "WeatherEnvironmentProfile.h"
+#include "WeatherGridDebugComponentVisualizer.h"
+
+#include "Components/WeatherGridDebugComponent.h"
 
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetCompilingManager.h"
 #include "Engine/Texture2D.h"
 #include "Engine/TextureCube.h"
 #include "HAL/IConsoleManager.h"
+#include "Editor/UnrealEdEngine.h"
 #include "MaterialEditingLibrary.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialExpressionAppendVector.h"
@@ -37,10 +41,12 @@
 #include "Materials/MaterialParameterCollection.h"
 #include "MaterialShared.h"
 #include "Misc/PackageName.h"
+#include "Misc/CoreDelegates.h"
 #include "ShaderCompiler.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
 #include "UObject/UObjectIterator.h"
+#include "UnrealEdGlobals.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogWeatherEnvironmentEditor, Log, All);
 
@@ -1411,6 +1417,17 @@ namespace WeatherLegacyFoliageIntegration
 
 void FWeatherEnvironmentSystemEditorModule::StartupModule()
 {
+	if (GUnrealEd)
+	{
+		RegisterComponentVisualizers();
+	}
+	else
+	{
+		FCoreDelegates::OnPostEngineInit.AddRaw(
+			this,
+			&FWeatherEnvironmentSystemEditorModule::RegisterComponentVisualizers);
+	}
+
 	GenerateSkyboxMaterialCommand = IConsoleManager::Get().RegisterConsoleCommand(
 		TEXT("Weather.GenerateSkyboxMaterial"),
 		TEXT("Create the Weather four-cubemap master material, or repair/recompile it when it already exists."),
@@ -1448,6 +1465,14 @@ void FWeatherEnvironmentSystemEditorModule::StartupModule()
 
 void FWeatherEnvironmentSystemEditorModule::ShutdownModule()
 {
+	FCoreDelegates::OnPostEngineInit.RemoveAll(this);
+	if (GUnrealEd && bComponentVisualizersRegistered)
+	{
+		GUnrealEd->UnregisterComponentVisualizer(
+			UWeatherGridDebugComponent::StaticClass()->GetFName());
+		bComponentVisualizersRegistered = false;
+	}
+
 	if (GenerateSkyboxMaterialCommand)
 	{
 		IConsoleManager::Get().UnregisterConsoleObject(GenerateSkyboxMaterialCommand);
@@ -1477,6 +1502,22 @@ void FWeatherEnvironmentSystemEditorModule::ShutdownModule()
 		IConsoleManager::Get().UnregisterConsoleObject(ValidateSpatialFoliageMaterialsCommand);
 		ValidateSpatialFoliageMaterialsCommand = nullptr;
 	}
+}
+
+void FWeatherEnvironmentSystemEditorModule::RegisterComponentVisualizers()
+{
+	if (!GUnrealEd || bComponentVisualizersRegistered)
+	{
+		return;
+	}
+
+	TSharedPtr<FComponentVisualizer> GridDebugVisualizer =
+		MakeShared<FWeatherGridDebugComponentVisualizer>();
+	GUnrealEd->RegisterComponentVisualizer(
+		UWeatherGridDebugComponent::StaticClass()->GetFName(),
+		GridDebugVisualizer);
+	GridDebugVisualizer->OnRegister();
+	bComponentVisualizersRegistered = true;
 }
 
 void FWeatherEnvironmentSystemEditorModule::GenerateWindMaterialAssets()

@@ -4,7 +4,7 @@ Weather Environment System is a standalone Unreal Engine 5.7 plugin for the game
 
 ## Current implementation
 
-Version 0.3.0 currently provides Stages 1–3:
+Version 0.4.3 currently provides Stages 1–4:
 
 - a persistent session clock owned by `WeatherStateSubsystem`;
 - configurable time scale, pause, date, and time controls;
@@ -16,13 +16,22 @@ Version 0.3.0 currently provides Stages 1–3:
 - four independently graded sky cubemaps;
 - Blueprint-readable time and astronomy values.
 - a deterministic, landscape-spanning CPU weather grid with constant-time point queries;
-- editor/PIE grid, influence-sphere, label, and exact wind-vector debug drawing;
+- editor/PIE grid, influence-sphere, and exact wind-vector debug drawing;
+- HUD-independent per-cell weather labels rendered directly by an editor component visualizer;
 - a movable wind director with manual, once, loop, and ping-pong route behavior;
 - fixed-step direction, speed, curl, gust, dead-zone, and exponential smoothing logic;
 - a shared wind field texture plus player-local MPC fallbacks;
 - `MF_WeatherFoliageWind` for separate trunk/branch sway and leaf rustle without per-instance MID updates.
+- deterministic fixed or profile-sampled weather seeds with stable IDs and finite lifetimes;
+- wind-advection with wrap, clamp, or expire boundary behavior;
+- normalized three-sigma Gaussian fronts evaluated only over affected cell neighborhoods;
+- double-buffered, bilinearly and temporally interpolated continuous weather queries;
+- rain/storm threshold hysteresis and minimum-duration weather classification;
+- ordered, priority-based `WeatherTypeLookupDataAsset` classification rules.
+- an area-scaled deterministic front lifecycle with weighted weather archetypes, minimum spacing, finite lifetimes, and upwind replenishment;
+- Blueprint controls for inspecting the target front count and forcing an immediate or gradual replenishment pass.
 
-Precipitation, local volumetric clouds, weather-front seeds/classification, and Ocean System integration are later milestones. See the repository-level implementation plan for the complete staged plan.
+Precipitation, local volumetric clouds, and Ocean System integration are later milestones. See the repository-level implementation plan for the complete staged plan.
 
 ## Initial Unreal setup
 
@@ -53,6 +62,7 @@ For the complete level and material instructions, see:
 - [SKY_DOME_SETUP.md](SKY_DOME_SETUP.md)
 - [CUSTOM_SKYBOX_MATERIAL_SETUP.md](CUSTOM_SKYBOX_MATERIAL_SETUP.md) — legacy fallback only
 - [WIND_FOLIAGE_SETUP.md](WIND_FOLIAGE_SETUP.md)
+- [WEATHER_SIMULATION_SETUP.md](WEATHER_SIMULATION_SETUP.md)
 
 ## Blueprint clock and Widget UI
 
@@ -159,6 +169,7 @@ Stage tests are registered under:
 WeatherEnvironment.Stage1
 WeatherEnvironment.Stage2
 WeatherEnvironment.Stage3
+WeatherEnvironment.Stage4
 ```
 
-Open **Tools > Test Automation**, filter for `WeatherEnvironment`, and run the clock, astronomy, grid, wind-route, and field-mapping tests.
+Open **Tools > Test Automation**, filter for `WeatherEnvironment`, and run the clock, astronomy, grid, wind-route, field-mapping, Gaussian propagation, advection, determinism, and classification tests.

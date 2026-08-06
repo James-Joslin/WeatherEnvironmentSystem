@@ -12,6 +12,7 @@ class ADirectionalLight;
 class ALandscapeProxy;
 class ASkyLight;
 class AWeatherWindDirector;
+class UWeatherGridDebugComponent;
 class UMaterialInstanceDynamic;
 class UPostProcessComponent;
 class USceneComponent;
@@ -71,6 +72,13 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Weather|Grid")
 	FWeatherGridInfo GetGridInfo() const;
 
+	/** C++ editor-visualizer access; the authoritative grid remains subsystem-owned in PIE. */
+	const FWeatherGrid* GetWeatherGridForDebugVisualization() const;
+	FString BuildWeatherCellDebugLabel(
+		const FWeatherCellCoord& Coord,
+		const FWeatherCellState& State) const;
+	static FColor GetWeatherTypeDebugColor(EWeatherType WeatherType);
+
 	UFUNCTION(BlueprintCallable, Category = "Weather|Wind")
 	void SetWindDirector(AWeatherWindDirector* NewWindDirector);
 
@@ -98,6 +106,12 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weather|Components")
 	TObjectPtr<UPostProcessComponent> SkyPostProcessComponent;
 
+#if WITH_EDITORONLY_DATA
+	/** Anchor for the HUD-independent editor component visualizer. */
+	UPROPERTY(VisibleAnywhere, Category = "Weather|Components")
+	TObjectPtr<UWeatherGridDebugComponent> WeatherGridDebugComponent;
+#endif
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weather|Profile")
 	TObjectPtr<UWeatherEnvironmentProfile> EnvironmentProfile;
 
@@ -124,6 +138,10 @@ public:
 	/** Used when EnvironmentProfile is unset. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Fallback")
 	FWeatherWindSettings WindSettings;
+
+	/** Used when EnvironmentProfile is unset. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Fallback")
+	FWeatherSimulationSettings SimulationSettings;
 
 	/** Explicit landscape sources. When empty, all landscape proxies in the world are discovered. */
 	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category = "Weather|Grid")
@@ -191,6 +209,7 @@ private:
 	const FWeatherSkyboxSettings& GetSkyboxSettings() const;
 	const FWeatherGridDefinition& GetGridDefinition() const;
 	const FWeatherWindSettings& GetWindSettings() const;
+	const FWeatherSimulationSettings& GetSimulationSettings() const;
 
 	void ResolveWorldReferences();
 	void ConfigureMoonMesh();

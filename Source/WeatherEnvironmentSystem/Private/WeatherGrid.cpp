@@ -287,6 +287,116 @@ FWeatherSample FWeatherGrid::GetWeatherAtLocation(const FVector& WorldLocation) 
 	return Sample;
 }
 
+FWeatherSample FWeatherGrid::GetWeatherAtLocationBilinear(const FVector& WorldLocation) const
+{
+	return GetWeatherAtLocationBilinear(WorldLocation, Cells);
+}
+
+FWeatherSample FWeatherGrid::GetWeatherAtLocationBilinear(
+	const FVector& WorldLocation,
+	const TArray<FWeatherCellState>& CellSnapshot) const
+{
+	FWeatherSample Sample;
+	if (!WorldToCell(WorldLocation, Sample.CellCoord)
+		|| CellSnapshot.Num() != GridInfo.CellCount)
+	{
+		return Sample;
+	}
+
+	const double GridX = (WorldLocation.X - GridInfo.Origin.X) / GridInfo.CellSize - 0.5;
+	const double GridY = (WorldLocation.Y - GridInfo.Origin.Y) / GridInfo.CellSize - 0.5;
+	const int32 RawX0 = FMath::FloorToInt(GridX);
+	const int32 RawY0 = FMath::FloorToInt(GridY);
+	const int32 X0 = FMath::Clamp(RawX0, 0, GridInfo.Dimensions.X - 1);
+	const int32 Y0 = FMath::Clamp(RawY0, 0, GridInfo.Dimensions.Y - 1);
+	const int32 X1 = FMath::Clamp(RawX0 + 1, 0, GridInfo.Dimensions.X - 1);
+	const int32 Y1 = FMath::Clamp(RawY0 + 1, 0, GridInfo.Dimensions.Y - 1);
+	const float AlphaX = static_cast<float>(FMath::Clamp(GridX - RawX0, 0.0, 1.0));
+	const float AlphaY = static_cast<float>(FMath::Clamp(GridY - RawY0, 0.0, 1.0));
+
+	auto GetSnapshotCell = [&CellSnapshot, this](const int32 X, const int32 Y) -> const FWeatherCellState&
+	{
+		return CellSnapshot[Y * GridInfo.Dimensions.X + X];
+	};
+	const FWeatherCellState& State00 = GetSnapshotCell(X0, Y0);
+	const FWeatherCellState& State10 = GetSnapshotCell(X1, Y0);
+	const FWeatherCellState& State01 = GetSnapshotCell(X0, Y1);
+	const FWeatherCellState& State11 = GetSnapshotCell(X1, Y1);
+	const FWeatherCellState& CategoricalState = CellSnapshot[
+		Sample.CellCoord.Y * GridInfo.Dimensions.X + Sample.CellCoord.X];
+
+	auto BilinearFloat = [AlphaX, AlphaY](
+		const float A,
+		const float B,
+		const float C,
+		const float D)
+	{
+		return FMath::Lerp(FMath::Lerp(A, B, AlphaX), FMath::Lerp(C, D, AlphaX), AlphaY);
+	};
+	auto BilinearVector = [AlphaX, AlphaY](
+		const FVector& A,
+		const FVector& B,
+		const FVector& C,
+		const FVector& D)
+	{
+		return FMath::Lerp(FMath::Lerp(A, B, AlphaX), FMath::Lerp(C, D, AlphaX), AlphaY);
+	};
+
+	Sample.State = CategoricalState;
+	Sample.State.WindVector = BilinearVector(
+		State00.WindVector,
+		State10.WindVector,
+		State01.WindVector,
+		State11.WindVector);
+	Sample.State.WindGust = BilinearFloat(
+		State00.WindGust,
+		State10.WindGust,
+		State01.WindGust,
+		State11.WindGust);
+	Sample.State.CloudCoverage = BilinearFloat(
+		State00.CloudCoverage,
+		State10.CloudCoverage,
+		State01.CloudCoverage,
+		State11.CloudCoverage);
+	Sample.State.CloudDensity = BilinearFloat(
+		State00.CloudDensity,
+		State10.CloudDensity,
+		State01.CloudDensity,
+		State11.CloudDensity);
+	Sample.State.Humidity = BilinearFloat(
+		State00.Humidity,
+		State10.Humidity,
+		State01.Humidity,
+		State11.Humidity);
+	Sample.State.TemperatureCelsius = BilinearFloat(
+		State00.TemperatureCelsius,
+		State10.TemperatureCelsius,
+		State01.TemperatureCelsius,
+		State11.TemperatureCelsius);
+	Sample.State.PressureHpa = BilinearFloat(
+		State00.PressureHpa,
+		State10.PressureHpa,
+		State01.PressureHpa,
+		State11.PressureHpa);
+	Sample.State.Storminess = BilinearFloat(
+		State00.Storminess,
+		State10.Storminess,
+		State01.Storminess,
+		State11.Storminess);
+	Sample.State.RainIntensity = BilinearFloat(
+		State00.RainIntensity,
+		State10.RainIntensity,
+		State01.RainIntensity,
+		State11.RainIntensity);
+	Sample.State.LightningPotential = BilinearFloat(
+		State00.LightningPotential,
+		State10.LightningPotential,
+		State01.LightningPotential,
+		State11.LightningPotential);
+	Sample.bIsValid = true;
+	return Sample;
+}
+
 void FWeatherGrid::GetCellsIntersectingBounds(
 	const FBox& WorldBounds,
 	TArray<FWeatherCellCoord>& OutCells) const
