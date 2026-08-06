@@ -86,6 +86,87 @@ struct WEATHERENVIRONMENTSYSTEM_API FWeatherTypePreset
 	FWeatherSeedValues Values;
 };
 
+/** Weighted production recipe used when the lifecycle manager creates a moving front. */
+USTRUCT(BlueprintType)
+struct WEATHERENVIRONMENTSYSTEM_API FWeatherFrontArchetype
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather Front")
+	bool bEnabled = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather Front")
+	EWeatherType WeatherType = EWeatherType::PartlyCloudy;
+
+	/** Relative selection weight. Zero prevents automatic spawning. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather Front", meta = (ClampMin = "0.0"))
+	float SpawnWeight = 1.0f;
+
+	/** Gaussian sigma in weather-cell widths. Influence ends at three sigma. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather Front", meta = (ClampMin = "0.01"))
+	FVector2D SigmaCellRange = FVector2D(0.6, 1.0);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather Front", meta = (ClampMin = "0.0"))
+	FVector2D StrengthRange = FVector2D(0.75, 1.25);
+
+	/** Real simulation seconds. Zero in either endpoint may produce an infinite front. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather Front", meta = (Units = "s"))
+	FVector2D LifetimeSecondsRange = FVector2D(900.0, 1800.0);
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather Front", meta = (ClampMin = "0.0"))
+	FVector2D MovementMultiplierRange = FVector2D(0.75, 1.15);
+};
+
+/** Maintains a deterministic, area-scaled population of fronts during long sessions. */
+USTRUCT(BlueprintType)
+struct WEATHERENVIRONMENTSYSTEM_API FWeatherFrontLifecycleSettings
+{
+	GENERATED_BODY()
+
+	FWeatherFrontLifecycleSettings();
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lifecycle")
+	bool bEnabled = true;
+
+	/** Target density. Sixteen means approximately one active front per sixteen cells. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lifecycle", meta = (ClampMin = "1.0"))
+	float TargetCellsPerFront = 16.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lifecycle", meta = (ClampMin = "0"))
+	int32 MinimumFrontCount = 4;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lifecycle", meta = (ClampMin = "0"))
+	int32 MaximumFrontCount = 32;
+
+	/** Authored and Blueprint-added seeds reduce the number of automatically managed fronts. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lifecycle")
+	bool bCountExternalSeedsTowardTarget = true;
+
+	/** Real seconds between gradual population checks after the initial fill. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lifecycle", meta = (ClampMin = "0.01", Units = "s"))
+	float ReplenishmentIntervalSeconds = 30.0f;
+
+	/** Prevents a large population correction from appearing in one running frame. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lifecycle", meta = (ClampMin = "1"))
+	int32 MaximumSpawnsPerInterval = 2;
+
+	/** Initial fill is spread through the world; later replacements enter from the upwind edge. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lifecycle")
+	bool bSpawnReplacementsAtUpwindBoundary = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lifecycle", meta = (ClampMin = "0.0", ClampMax = "0.49"))
+	float BoundaryInsetCellFraction = 0.15f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lifecycle", meta = (ClampMin = "0.0"))
+	float MinimumSpacingCellWidths = 0.75f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lifecycle", meta = (ClampMin = "1", ClampMax = "64"))
+	int32 PositionAttempts = 12;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Lifecycle")
+	TArray<FWeatherFrontArchetype> Archetypes;
+};
+
 /** A compact persistent source for a coherent weather front. Sigma is its Gaussian standard deviation. */
 USTRUCT(BlueprintType)
 struct WEATHERENVIRONMENTSYSTEM_API FWeatherSeed
@@ -128,6 +209,10 @@ struct WEATHERENVIRONMENTSYSTEM_API FWeatherSeed
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather Seed", meta = (EditCondition = "bUseWeatherTypePreset"))
 	EWeatherType WeatherTypePreset = EWeatherType::Clear;
+
+	/** True only for fronts automatically created by the lifecycle manager. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weather Seed")
+	bool bManagedByLifecycle = false;
 };
 
 USTRUCT(BlueprintType)
@@ -272,9 +357,9 @@ struct WEATHERENVIRONMENTSYSTEM_API FWeatherSimulationSettings
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Seeds")
 	TArray<FWeatherSeed> InitialSeeds;
 
-	/** Four deterministic, spatially distributed seeds provide useful weather in a new profile. */
+	/** Legacy/manual initial generator. Leave at zero when Front Lifecycle owns population density. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Seeds", meta = (ClampMin = "0"))
-	int32 InitialGeneratedSeedCount = 4;
+	int32 InitialGeneratedSeedCount = 0;
 
 	/** Keeps generated front size useful when designers change weather-grid cell size. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Seed Generation")
@@ -303,6 +388,10 @@ struct WEATHERENVIRONMENTSYSTEM_API FWeatherSimulationSettings
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Seed Generation")
 	TArray<FWeatherTypePreset> WeatherTypePresets;
+
+	/** Optional production population manager. Manual seed APIs remain available while it is enabled. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Front Lifecycle")
+	FWeatherFrontLifecycleSettings FrontLifecycle;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Thresholds", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float RainEnterThreshold = 0.55f;
@@ -366,6 +455,18 @@ public:
 	static int32 SelectGeneratedPresetIndex(
 		const FWeatherSimulationSettings& Settings,
 		int32 SeedIndex);
+	static int32 CalculateLifecycleTargetCount(
+		const FWeatherFrontLifecycleSettings& Settings,
+		const FWeatherGridInfo& GridInfo,
+		int32 MaximumSeedCount);
+	static int32 SelectWeightedArchetypeIndex(
+		const TArray<FWeatherFrontArchetype>& Archetypes,
+		FRandomStream& RandomStream);
+	static FVector2D GenerateUpwindBoundaryPosition(
+		const FWeatherGridInfo& GridInfo,
+		const FVector2D& WindDirection,
+		float InsetCellFraction,
+		FRandomStream& RandomStream);
 	static EWeatherType ClassifyBuiltIn(
 		const FWeatherCellState& State,
 		EWeatherType CurrentType = EWeatherType::Clear);

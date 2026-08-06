@@ -27,9 +27,28 @@ void UWeatherStateSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	WindSimulationAccumulator = 0.0f;
 	bWindConfigured = false;
 	bWindFieldDirty = false;
+	WeatherSimulationSettings = FWeatherSimulationSettings();
+	WeatherSimulationAccumulator = 0.0f;
+	WeatherSimulationTimeSeconds = 0.0;
+	bWeatherSimulationConfigured = false;
+	bInitialSeedsApplied = false;
+	bInitialGeneratedSeedsApplied = false;
+	bInitialLifecyclePopulationApplied = false;
+	WeatherFrontLifecycleAccumulator = 0.0f;
+	ConfiguredEnvironmentSeed = WeatherSimulationSettings.EnvironmentSeed;
+	NextSeedSerial = 0;
+	WeatherRandomStream.Initialize(ConfiguredEnvironmentSeed);
+	ActiveSeeds.Reset();
+	PreviousWeatherSnapshot.Reset();
+	WeatherTypeDurations.Reset();
+	LastBroadcastLocalWeather = FWeatherSample();
+	LocalWeatherEventElapsedSeconds = 0.0f;
 	WindFieldTexture = nullptr;
 	WindMaterialParameterCollection = nullptr;
 	LastWindFieldPixels.Reset();
+	ActiveSeeds.Reset();
+	PreviousWeatherSnapshot.Reset();
+	WeatherTypeDurations.Reset();
 	WindDirector.Reset();
 	ActiveController.Reset();
 }
@@ -53,6 +72,7 @@ void UWeatherStateSubsystem::Tick(const float DeltaTime)
 	}
 
 	TickWind(DeltaTime);
+	TickWeatherSimulation(DeltaTime);
 }
 
 TStatId UWeatherStateSubsystem::GetStatId() const
@@ -185,6 +205,15 @@ bool UWeatherStateSubsystem::RebuildGridFromBounds(
 		{
 			ForceWindUpdate();
 		}
+		PreviousWeatherSnapshot = WeatherGrid.GetCells();
+		WeatherTypeDurations.Init(0.0f, WeatherGrid.GetInfo().CellCount);
+		if (bWeatherSimulationConfigured)
+		{
+			ApplyInitialSeeds();
+			MaintainWeatherFrontPopulation(!bInitialLifecyclePopulationApplied);
+			StepWeatherSimulation(0.0f);
+			PreviousWeatherSnapshot = WeatherGrid.GetCells();
+		}
 	}
 	else
 	{
@@ -223,6 +252,8 @@ bool UWeatherStateSubsystem::RebuildGridFromLandscapeSources(
 void UWeatherStateSubsystem::ClearGrid()
 {
 	WeatherGrid.Clear();
+	PreviousWeatherSnapshot.Reset();
+	WeatherTypeDurations.Reset();
 	LastWindFieldPixels.Reset();
 	bWindFieldDirty = true;
 	bLastGridBuildSucceeded = false;
@@ -259,7 +290,22 @@ bool UWeatherStateSubsystem::GetCellState(
 FWeatherSample UWeatherStateSubsystem::GetWeatherAtLocation(
 	const FVector& WorldLocation) const
 {
-	return WeatherGrid.GetWeatherAtLocation(WorldLocation);
+	return BuildInterpolatedWeatherSample(WorldLocation);
+}
+
+bool UWeatherStateSubsystem::GetWeatherTypeAtLocation(
+	const FVector& WorldLocation,
+	EWeatherType& OutWeatherType) const
+{
+	const FWeatherSample Sample = BuildInterpolatedWeatherSample(WorldLocation);
+	if (!Sample.bIsValid)
+	{
+		OutWeatherType = EWeatherType::Clear;
+		return false;
+	}
+
+	OutWeatherType = Sample.State.WeatherType;
+	return true;
 }
 
 TArray<FWeatherCellState> UWeatherStateSubsystem::GetCellStatesForBounds(
@@ -278,6 +324,547 @@ TArray<FWeatherCellState> UWeatherStateSubsystem::GetCellStatesForBounds(
 		}
 	}
 	return States;
+}
+
+void UWeatherStateSubsystem::ConfigureWeatherSimulation(
+	const FWeatherSimulationSettings& Settings)
+{
+	const bool bFirstConfiguration = !bWeatherSimulationConfigured;
+	const bool bSeedChanged = !bFirstConfiguration
+		&& ConfiguredEnvironmentSeed != Settings.EnvironmentSeed;
+	WeatherSimulationSettings = Settings;
+	WeatherSimulationSettings.FixedUpdateIntervalSeconds = FMath::Max(
+		WeatherSimulationSettings.FixedUpdateIntervalSeconds,
+		0.001f);
+	WeatherSimulationSettings.MaximumSubstepsPerFrame = FMath::Clamp(
+		WeatherSimulationSettings.MaximumSubstepsPerFrame,
+		1,
+		32);
+	WeatherSimulationSettings.MaximumSeedCount = FMath::Max(
+		WeatherSimulationSettings.MaximumSeedCount,
+		1);
+	WeatherSimulationSettings.BaselineWeight = FMath::Max(
+		WeatherSimulationSettings.BaselineWeight,
+		0.0001f);
+	WeatherSimulationSettings.RainEnterThreshold = FMath::Clamp(
+		WeatherSimulationSettings.RainEnterThreshold,
+		0.0f,
+		1.0f);
+	WeatherSimulationSettings.RainExitThreshold = FMath::Clamp(
+		WeatherSimulationSettings.RainExitThreshold,
+		0.0f,
+		WeatherSimulationSettings.RainEnterThreshold);
+	WeatherSimulationSettings.StormEnterThreshold = FMath::Clamp(
+		WeatherSimulationSettings.StormEnterThreshold,
+		0.0f,
+		1.0f);
+	WeatherSimulationSettings.StormExitThreshold = FMath::Clamp(
+		WeatherSimulationSettings.StormExitThreshold,
+		0.0f,
+		WeatherSimulationSettings.StormEnterThreshold);
+	WeatherSimulationSettings.MinimumWeatherTypeDurationSeconds = FMath::Max(
+		WeatherSimulationSettings.MinimumWeatherTypeDurationSeconds,
+		0.0f);
+	FWeatherFrontLifecycleSettings& Lifecycle = WeatherSimulationSettings.FrontLifecycle;
+	Lifecycle.TargetCellsPerFront = FMath::Max(Lifecycle.TargetCellsPerFront, 1.0f);
+	Lifecycle.MinimumFrontCount = FMath::Max(Lifecycle.MinimumFrontCount, 0);
+	Lifecycle.MaximumFrontCount = FMath::Max(
+		Lifecycle.MaximumFrontCount,
+		Lifecycle.MinimumFrontCount);
+	Lifecycle.ReplenishmentIntervalSeconds = FMath::Max(
+		Lifecycle.ReplenishmentIntervalSeconds,
+		0.01f);
+	Lifecycle.MaximumSpawnsPerInterval = FMath::Max(
+		Lifecycle.MaximumSpawnsPerInterval,
+		1);
+	Lifecycle.BoundaryInsetCellFraction = FMath::Clamp(
+		Lifecycle.BoundaryInsetCellFraction,
+		0.0f,
+		0.49f);
+	Lifecycle.MinimumSpacingCellWidths = FMath::Max(
+		Lifecycle.MinimumSpacingCellWidths,
+		0.0f);
+	Lifecycle.PositionAttempts = FMath::Clamp(Lifecycle.PositionAttempts, 1, 64);
+	for (FWeatherFrontArchetype& Archetype : Lifecycle.Archetypes)
+	{
+		Archetype.SpawnWeight = FMath::Max(Archetype.SpawnWeight, 0.0f);
+		Archetype.SigmaCellRange.X = FMath::Max(Archetype.SigmaCellRange.X, 0.01);
+		Archetype.SigmaCellRange.Y = FMath::Max(Archetype.SigmaCellRange.Y, 0.01);
+		Archetype.StrengthRange.X = FMath::Max(Archetype.StrengthRange.X, 0.0);
+		Archetype.StrengthRange.Y = FMath::Max(Archetype.StrengthRange.Y, 0.0);
+		Archetype.LifetimeSecondsRange.X = FMath::Max(Archetype.LifetimeSecondsRange.X, 0.0);
+		Archetype.LifetimeSecondsRange.Y = FMath::Max(Archetype.LifetimeSecondsRange.Y, 0.0);
+		Archetype.MovementMultiplierRange.X = FMath::Max(Archetype.MovementMultiplierRange.X, 0.0);
+		Archetype.MovementMultiplierRange.Y = FMath::Max(Archetype.MovementMultiplierRange.Y, 0.0);
+	}
+	WeatherSimulationAccumulator = 0.0f;
+	WeatherFrontLifecycleAccumulator = 0.0f;
+	bWeatherSimulationConfigured = true;
+
+	if (bFirstConfiguration || bSeedChanged)
+	{
+		ConfiguredEnvironmentSeed = WeatherSimulationSettings.EnvironmentSeed;
+		WeatherRandomStream.Initialize(ConfiguredEnvironmentSeed);
+		NextSeedSerial = 0;
+	}
+
+	if (bFirstConfiguration)
+	{
+		ApplyInitialSeeds();
+	}
+	MaintainWeatherFrontPopulation(!bInitialLifecyclePopulationApplied);
+
+	if (WeatherGrid.GetInfo().bIsValid)
+	{
+		StepWeatherSimulation(0.0f);
+		PreviousWeatherSnapshot = WeatherGrid.GetCells();
+	}
+}
+
+FGuid UWeatherStateSubsystem::AddSeed(const FWeatherSeed& Seed)
+{
+	if (!bWeatherSimulationConfigured
+		|| ActiveSeeds.Num() >= WeatherSimulationSettings.MaximumSeedCount)
+	{
+		return FGuid();
+	}
+
+	FWeatherSeed MaterializedSeed = Seed;
+	if (MaterializedSeed.Id.IsValid())
+	{
+		const bool bDuplicate = ActiveSeeds.ContainsByPredicate(
+			[&MaterializedSeed](const FWeatherSeed& ExistingSeed)
+			{
+				return ExistingSeed.Id == MaterializedSeed.Id;
+			});
+		if (bDuplicate)
+		{
+			return FGuid();
+		}
+	}
+	else
+	{
+		do
+		{
+			MaterializedSeed.Id = FWeatherSimulationMath::MakeDeterministicSeedId(
+				ConfiguredEnvironmentSeed,
+				NextSeedSerial++);
+		}
+		while (ActiveSeeds.ContainsByPredicate(
+			[&MaterializedSeed](const FWeatherSeed& ExistingSeed)
+			{
+				return ExistingSeed.Id == MaterializedSeed.Id;
+			}));
+	}
+
+	MaterializedSeed.Sigma = FMath::Max(MaterializedSeed.Sigma, 1.0);
+	MaterializedSeed.Strength = FMath::Max(MaterializedSeed.Strength, 0.0f);
+	MaterializedSeed.MovementMultiplier = FMath::Max(MaterializedSeed.MovementMultiplier, 0.0f);
+	MaterializedSeed.AgeSeconds = FMath::Max(MaterializedSeed.AgeSeconds, 0.0f);
+	ResolveSeedValues(MaterializedSeed);
+	if (WeatherGrid.GetInfo().bIsValid
+		&& !FWeatherSimulationMath::ApplyBoundaryPolicy(
+			MaterializedSeed.Position,
+			WeatherGrid.GetInfo(),
+			WeatherSimulationSettings.BoundaryPolicy))
+	{
+		return FGuid();
+	}
+
+	ActiveSeeds.Add(MaterializedSeed);
+	return MaterializedSeed.Id;
+}
+
+bool UWeatherStateSubsystem::RemoveSeed(const FGuid SeedId)
+{
+	const int32 SeedIndex = ActiveSeeds.IndexOfByPredicate(
+		[&SeedId](const FWeatherSeed& Seed)
+		{
+			return Seed.Id == SeedId;
+		});
+	if (SeedIndex == INDEX_NONE)
+	{
+		return false;
+	}
+
+	ActiveSeeds.RemoveAt(SeedIndex);
+	return true;
+}
+
+bool UWeatherStateSubsystem::MoveSeed(
+	const FGuid SeedId,
+	FVector2D NewPosition)
+{
+	const int32 SeedIndex = ActiveSeeds.IndexOfByPredicate(
+		[&SeedId](const FWeatherSeed& Seed)
+		{
+			return Seed.Id == SeedId;
+		});
+	if (SeedIndex == INDEX_NONE)
+	{
+		return false;
+	}
+
+	if (WeatherGrid.GetInfo().bIsValid
+		&& !FWeatherSimulationMath::ApplyBoundaryPolicy(
+			NewPosition,
+			WeatherGrid.GetInfo(),
+			WeatherSimulationSettings.BoundaryPolicy))
+	{
+		ActiveSeeds.RemoveAt(SeedIndex);
+		return false;
+	}
+
+	ActiveSeeds[SeedIndex].Position = NewPosition;
+	return true;
+}
+
+void UWeatherStateSubsystem::ClearSeeds()
+{
+	ActiveSeeds.Reset();
+	if (bWeatherSimulationConfigured && WeatherGrid.GetInfo().bIsValid)
+	{
+		StepWeatherSimulation(0.0f);
+		PreviousWeatherSnapshot = WeatherGrid.GetCells();
+	}
+}
+
+int32 UWeatherStateSubsystem::GenerateSeedSet(
+	const int32 SeedCount,
+	const bool bReplaceExisting)
+{
+	if (!bWeatherSimulationConfigured || !WeatherGrid.GetInfo().bIsValid)
+	{
+		return 0;
+	}
+
+	if (bReplaceExisting)
+	{
+		ActiveSeeds.Reset();
+	}
+
+	const int32 AvailableSlots = FMath::Max(
+		WeatherSimulationSettings.MaximumSeedCount - ActiveSeeds.Num(),
+		0);
+	const int32 CountToGenerate = FMath::Clamp(SeedCount, 0, AvailableSlots);
+	const FBox& Bounds = WeatherGrid.GetInfo().GridBounds;
+	int32 AddedCount = 0;
+	for (int32 SeedIndex = 0; SeedIndex < CountToGenerate; ++SeedIndex)
+	{
+		FWeatherSeed Seed;
+		Seed.Position = FWeatherSimulationMath::GenerateStratifiedPosition(
+			Bounds,
+			SeedIndex,
+			CountToGenerate,
+			WeatherRandomStream);
+		Seed.Sigma = FWeatherSimulationMath::SampleGeneratedSigma(
+			WeatherSimulationSettings,
+			WeatherGrid.GetInfo(),
+			WeatherRandomStream);
+		Seed.Strength = WeatherRandomStream.FRandRange(
+			FMath::Min(WeatherSimulationSettings.GeneratedStrengthRange.X, WeatherSimulationSettings.GeneratedStrengthRange.Y),
+			FMath::Max(WeatherSimulationSettings.GeneratedStrengthRange.X, WeatherSimulationSettings.GeneratedStrengthRange.Y));
+		Seed.LifetimeSeconds = WeatherRandomStream.FRandRange(
+			FMath::Min(WeatherSimulationSettings.GeneratedLifetimeRange.X, WeatherSimulationSettings.GeneratedLifetimeRange.Y),
+			FMath::Max(WeatherSimulationSettings.GeneratedLifetimeRange.X, WeatherSimulationSettings.GeneratedLifetimeRange.Y));
+		Seed.MovementMultiplier = WeatherRandomStream.FRandRange(
+			FMath::Min(WeatherSimulationSettings.GeneratedMovementMultiplierRange.X, WeatherSimulationSettings.GeneratedMovementMultiplierRange.Y),
+			FMath::Max(WeatherSimulationSettings.GeneratedMovementMultiplierRange.X, WeatherSimulationSettings.GeneratedMovementMultiplierRange.Y));
+
+		if (!WeatherSimulationSettings.WeatherTypePresets.IsEmpty())
+		{
+			const int32 PresetIndex = FWeatherSimulationMath::SelectGeneratedPresetIndex(
+				WeatherSimulationSettings,
+				SeedIndex);
+			Seed.bUseWeatherTypePreset = true;
+			Seed.WeatherTypePreset = WeatherSimulationSettings.WeatherTypePresets[PresetIndex].WeatherType;
+		}
+		else
+		{
+			Seed.ValueSource = EWeatherSeedValueSource::ProfileSampled;
+		}
+
+		if (AddSeed(Seed).IsValid())
+		{
+			++AddedCount;
+		}
+	}
+
+	if (AddedCount > 0 || bReplaceExisting)
+	{
+		StepWeatherSimulation(0.0f);
+		PreviousWeatherSnapshot = WeatherGrid.GetCells();
+	}
+	return AddedCount;
+}
+
+int32 UWeatherStateSubsystem::ReplenishWeatherFronts(const bool bFillImmediately)
+{
+	const int32 AddedCount = MaintainWeatherFrontPopulation(bFillImmediately);
+	if (AddedCount > 0 && WeatherGrid.GetInfo().bIsValid)
+	{
+		StepWeatherSimulation(0.0f);
+		PreviousWeatherSnapshot = WeatherGrid.GetCells();
+	}
+	return AddedCount;
+}
+
+int32 UWeatherStateSubsystem::GetTargetWeatherFrontCount() const
+{
+	return FWeatherSimulationMath::CalculateLifecycleTargetCount(
+		WeatherSimulationSettings.FrontLifecycle,
+		WeatherGrid.GetInfo(),
+		WeatherSimulationSettings.MaximumSeedCount);
+}
+
+int32 UWeatherStateSubsystem::MaintainWeatherFrontPopulation(const bool bFillImmediately)
+{
+	if (!bWeatherSimulationConfigured
+		|| !WeatherSimulationSettings.FrontLifecycle.bEnabled
+		|| !WeatherGrid.GetInfo().bIsValid)
+	{
+		return 0;
+	}
+
+	const FWeatherFrontLifecycleSettings& Lifecycle =
+		WeatherSimulationSettings.FrontLifecycle;
+	const int32 TargetCount = GetTargetWeatherFrontCount();
+	const int32 ManagedCount = ActiveSeeds.CountByPredicate(
+		[](const FWeatherSeed& Seed)
+		{
+			return Seed.bManagedByLifecycle;
+		});
+	const int32 PopulationCount = Lifecycle.bCountExternalSeedsTowardTarget
+		? ActiveSeeds.Num()
+		: ManagedCount;
+	const int32 MissingCount = FMath::Max(TargetCount - PopulationCount, 0);
+	const int32 AvailableSlots = FMath::Max(
+		WeatherSimulationSettings.MaximumSeedCount - ActiveSeeds.Num(),
+		0);
+	const int32 SpawnLimit = bFillImmediately
+		? MissingCount
+		: FMath::Min(MissingCount, Lifecycle.MaximumSpawnsPerInterval);
+	const int32 SpawnCount = FMath::Min(SpawnLimit, AvailableSlots);
+	const bool bAtUpwindBoundary = bInitialLifecyclePopulationApplied
+		&& Lifecycle.bSpawnReplacementsAtUpwindBoundary;
+
+	int32 AddedCount = 0;
+	for (int32 SpawnIndex = 0; SpawnIndex < SpawnCount; ++SpawnIndex)
+	{
+		if (!SpawnLifecycleFront(bAtUpwindBoundary))
+		{
+			break;
+		}
+		++AddedCount;
+	}
+
+	bInitialLifecyclePopulationApplied = true;
+	return AddedCount;
+}
+
+bool UWeatherStateSubsystem::SpawnLifecycleFront(const bool bAtUpwindBoundary)
+{
+	const FWeatherFrontLifecycleSettings& Lifecycle =
+		WeatherSimulationSettings.FrontLifecycle;
+	TArray<FWeatherFrontArchetype> EligibleArchetypes;
+	EligibleArchetypes.Reserve(Lifecycle.Archetypes.Num());
+	for (const FWeatherFrontArchetype& Archetype : Lifecycle.Archetypes)
+	{
+		const bool bHasPreset = WeatherSimulationSettings.WeatherTypePresets.ContainsByPredicate(
+			[&Archetype](const FWeatherTypePreset& Preset)
+			{
+				return Preset.WeatherType == Archetype.WeatherType;
+			});
+		if (Archetype.bEnabled && Archetype.SpawnWeight > 0.0f && bHasPreset)
+		{
+			EligibleArchetypes.Add(Archetype);
+		}
+	}
+
+	const int32 ArchetypeIndex = FWeatherSimulationMath::SelectWeightedArchetypeIndex(
+		EligibleArchetypes,
+		WeatherRandomStream);
+	if (!EligibleArchetypes.IsValidIndex(ArchetypeIndex))
+	{
+		return false;
+	}
+
+	const FWeatherFrontArchetype& Archetype = EligibleArchetypes[ArchetypeIndex];
+	const auto SampleRange = [this](const FVector2D& Range)
+	{
+		return WeatherRandomStream.FRandRange(
+			static_cast<float>(FMath::Min(Range.X, Range.Y)),
+			static_cast<float>(FMath::Max(Range.X, Range.Y)));
+	};
+
+	FWeatherSeed Seed;
+	Seed.Position = FindLifecycleSpawnPosition(bAtUpwindBoundary);
+	Seed.Sigma = FMath::Max(
+		static_cast<double>(SampleRange(Archetype.SigmaCellRange))
+			* WeatherGrid.GetInfo().CellSize,
+		1.0);
+	Seed.Strength = FMath::Max(SampleRange(Archetype.StrengthRange), 0.0f);
+	Seed.LifetimeSeconds = FMath::Max(SampleRange(Archetype.LifetimeSecondsRange), 0.0f);
+	Seed.MovementMultiplier = FMath::Max(
+		SampleRange(Archetype.MovementMultiplierRange),
+		0.0f);
+	Seed.bUseWeatherTypePreset = true;
+	Seed.WeatherTypePreset = Archetype.WeatherType;
+	Seed.bManagedByLifecycle = true;
+	return AddSeed(Seed).IsValid();
+}
+
+FVector2D UWeatherStateSubsystem::FindLifecycleSpawnPosition(
+	const bool bAtUpwindBoundary)
+{
+	const FWeatherGridInfo& Info = WeatherGrid.GetInfo();
+	const FWeatherFrontLifecycleSettings& Lifecycle =
+		WeatherSimulationSettings.FrontLifecycle;
+	const FVector2D Minimum(Info.GridBounds.Min.X, Info.GridBounds.Min.Y);
+	const FVector2D Maximum(Info.GridBounds.Max.X, Info.GridBounds.Max.Y);
+	const double InteriorInset = FMath::Min(
+		Info.CellSize * 0.5,
+		FMath::Min(Maximum.X - Minimum.X, Maximum.Y - Minimum.Y) * 0.49);
+	const double MinimumSpacing = Info.CellSize * Lifecycle.MinimumSpacingCellWidths;
+	const double MinimumSpacingSquared = FMath::Square(MinimumSpacing);
+	const FVector2D PrevailingDirection = GetPrevailingWindDirection();
+
+	FVector2D BestCandidate = Info.GridBounds.GetCenter();
+	double BestNearestDistanceSquared = -1.0;
+	for (int32 Attempt = 0; Attempt < Lifecycle.PositionAttempts; ++Attempt)
+	{
+		const FVector2D Candidate = bAtUpwindBoundary
+			? FWeatherSimulationMath::GenerateUpwindBoundaryPosition(
+				Info,
+				PrevailingDirection,
+				Lifecycle.BoundaryInsetCellFraction,
+				WeatherRandomStream)
+			: FVector2D(
+				WeatherRandomStream.FRandRange(
+					Minimum.X + InteriorInset,
+					Maximum.X - InteriorInset),
+				WeatherRandomStream.FRandRange(
+					Minimum.Y + InteriorInset,
+					Maximum.Y - InteriorInset));
+
+		double NearestDistanceSquared = TNumericLimits<double>::Max();
+		for (const FWeatherSeed& ExistingSeed : ActiveSeeds)
+		{
+			double DeltaX = FMath::Abs(Candidate.X - ExistingSeed.Position.X);
+			double DeltaY = FMath::Abs(Candidate.Y - ExistingSeed.Position.Y);
+			if (WeatherSimulationSettings.BoundaryPolicy == EWeatherSeedBoundaryPolicy::Wrap)
+			{
+				const double Width = Maximum.X - Minimum.X;
+				const double Height = Maximum.Y - Minimum.Y;
+				DeltaX = FMath::Min(DeltaX, FMath::Max(Width - DeltaX, 0.0));
+				DeltaY = FMath::Min(DeltaY, FMath::Max(Height - DeltaY, 0.0));
+			}
+			NearestDistanceSquared = FMath::Min(
+				NearestDistanceSquared,
+				DeltaX * DeltaX + DeltaY * DeltaY);
+		}
+
+		if (ActiveSeeds.IsEmpty() || NearestDistanceSquared >= MinimumSpacingSquared)
+		{
+			return Candidate;
+		}
+		if (NearestDistanceSquared > BestNearestDistanceSquared)
+		{
+			BestCandidate = Candidate;
+			BestNearestDistanceSquared = NearestDistanceSquared;
+		}
+	}
+
+	// A crowded edge should not permanently starve the target population. Use
+	// the best max-min candidate found after the configured number of attempts.
+	return BestCandidate;
+}
+
+FVector2D UWeatherStateSubsystem::GetPrevailingWindDirection() const
+{
+	FVector2D AccumulatedWind = FVector2D::ZeroVector;
+	for (const FWeatherCellState& Cell : WeatherGrid.GetCells())
+	{
+		AccumulatedWind += FVector2D(Cell.WindVector.X, Cell.WindVector.Y);
+	}
+
+	if (!AccumulatedWind.IsNearlyZero())
+	{
+		return AccumulatedWind.GetSafeNormal();
+	}
+
+	const FVector2D DefaultDirection(
+		WindSettings.DefaultDirection.X,
+		WindSettings.DefaultDirection.Y);
+	return DefaultDirection.GetSafeNormal(UE_SMALL_NUMBER, FVector2D(1.0, 0.0));
+}
+
+void UWeatherStateSubsystem::StepSimulation(const int32 StepCount)
+{
+	if (!bWeatherSimulationConfigured || !WeatherGrid.GetInfo().bIsValid)
+	{
+		return;
+	}
+
+	const int32 ClampedStepCount = FMath::Clamp(StepCount, 1, 10000);
+	for (int32 StepIndex = 0; StepIndex < ClampedStepCount; ++StepIndex)
+	{
+		StepWeatherSimulation(WeatherSimulationSettings.FixedUpdateIntervalSeconds);
+	}
+
+	// Explicit stepping is an inspection/control API, so expose its completed
+	// result immediately instead of retaining a one-step presentation delay.
+	PreviousWeatherSnapshot = WeatherGrid.GetCells();
+	WeatherSimulationAccumulator = 0.0f;
+}
+
+void UWeatherStateSubsystem::ApplyInitialSeeds()
+{
+	if (!bInitialSeedsApplied)
+	{
+		bInitialSeedsApplied = true;
+		for (const FWeatherSeed& Seed : WeatherSimulationSettings.InitialSeeds)
+		{
+			if (ActiveSeeds.Num() >= WeatherSimulationSettings.MaximumSeedCount)
+			{
+				break;
+			}
+			AddSeed(Seed);
+		}
+	}
+
+	if (!bInitialGeneratedSeedsApplied && WeatherGrid.GetInfo().bIsValid)
+	{
+		bInitialGeneratedSeedsApplied = true;
+		if (WeatherSimulationSettings.InitialGeneratedSeedCount > 0)
+		{
+			GenerateSeedSet(WeatherSimulationSettings.InitialGeneratedSeedCount, false);
+		}
+	}
+}
+
+void UWeatherStateSubsystem::ResolveSeedValues(FWeatherSeed& Seed)
+{
+	if (Seed.bUseWeatherTypePreset)
+	{
+		for (const FWeatherTypePreset& Preset : WeatherSimulationSettings.WeatherTypePresets)
+		{
+			if (Preset.WeatherType == Seed.WeatherTypePreset)
+			{
+				Seed.Values = Preset.Values;
+				Seed.ValueSource = EWeatherSeedValueSource::Fixed;
+				return;
+			}
+		}
+	}
+
+	if (Seed.ValueSource == EWeatherSeedValueSource::ProfileSampled)
+	{
+		Seed.Values = FWeatherSimulationMath::SampleValues(
+			WeatherSimulationSettings.GeneratedValueRange,
+			WeatherRandomStream);
+		Seed.ValueSource = EWeatherSeedValueSource::Fixed;
+	}
 }
 
 void UWeatherStateSubsystem::ConfigureWind(const FWeatherWindSettings& Settings)
@@ -330,7 +917,7 @@ bool UWeatherStateSubsystem::GetWindAtLocation(
 	FVector& OutWindVector,
 	float& OutGust) const
 {
-	const FWeatherSample Sample = WeatherGrid.GetWeatherAtLocation(WorldLocation);
+	const FWeatherSample Sample = WeatherGrid.GetWeatherAtLocationBilinear(WorldLocation);
 	if (!Sample.bIsValid)
 	{
 		OutWindVector = FVector::ZeroVector;
@@ -435,6 +1022,186 @@ void UWeatherStateSubsystem::StepWind(const float StepSeconds)
 	PublishWindMaterialParameters();
 }
 
+void UWeatherStateSubsystem::TickWeatherSimulation(const float DeltaTime)
+{
+	if (!bWeatherSimulationConfigured
+		|| !WeatherSimulationSettings.bEnabled
+		|| DeltaTime <= 0.0f)
+	{
+		return;
+	}
+
+	const float Interval = FMath::Max(
+		WeatherSimulationSettings.FixedUpdateIntervalSeconds,
+		0.001f);
+	WeatherSimulationAccumulator += DeltaTime;
+	int32 Steps = 0;
+	while (WeatherSimulationAccumulator >= Interval
+		&& Steps < WeatherSimulationSettings.MaximumSubstepsPerFrame)
+	{
+		StepWeatherSimulation(Interval);
+		WeatherSimulationAccumulator -= Interval;
+		++Steps;
+	}
+
+	if (Steps == WeatherSimulationSettings.MaximumSubstepsPerFrame
+		&& WeatherSimulationAccumulator >= Interval)
+	{
+		WeatherSimulationAccumulator = FMath::Fmod(WeatherSimulationAccumulator, Interval);
+	}
+}
+
+void UWeatherStateSubsystem::TickWeatherFrontLifecycle(const float StepSeconds)
+{
+	if (StepSeconds <= 0.0f
+		|| !WeatherSimulationSettings.FrontLifecycle.bEnabled)
+	{
+		return;
+	}
+
+	const float Interval = FMath::Max(
+		WeatherSimulationSettings.FrontLifecycle.ReplenishmentIntervalSeconds,
+		0.01f);
+	WeatherFrontLifecycleAccumulator += StepSeconds;
+	if (WeatherFrontLifecycleAccumulator >= Interval)
+	{
+		MaintainWeatherFrontPopulation(false);
+		WeatherFrontLifecycleAccumulator = FMath::Fmod(
+			WeatherFrontLifecycleAccumulator,
+			Interval);
+	}
+}
+
+void UWeatherStateSubsystem::StepWeatherSimulation(const float StepSeconds)
+{
+	if (!WeatherGrid.GetInfo().bIsValid || WeatherGrid.GetCells().IsEmpty())
+	{
+		return;
+	}
+
+	const TArray<FWeatherCellState> PreviousCells = WeatherGrid.GetCells();
+	PreviousWeatherSnapshot = PreviousCells;
+	if (StepSeconds > 0.0f)
+	{
+		FWeatherSimulationMath::AdvectSeeds(
+			ActiveSeeds,
+			WeatherGrid,
+			WeatherSimulationSettings,
+			StepSeconds);
+		WeatherSimulationTimeSeconds += StepSeconds;
+		TickWeatherFrontLifecycle(StepSeconds);
+	}
+
+	FWeatherSimulationMath::RebuildCellFields(
+		WeatherGrid,
+		ActiveSeeds,
+		WeatherSimulationSettings,
+		StepSeconds,
+		WeatherTypeDurations);
+	BroadcastWeatherChanges(PreviousCells, StepSeconds);
+	PublishWindMaterialParameters();
+}
+
+void UWeatherStateSubsystem::BroadcastWeatherChanges(
+	const TArray<FWeatherCellState>& PreviousCells,
+	const float StepSeconds)
+{
+	const TArray<FWeatherCellState>& CurrentCells = WeatherGrid.GetCells();
+	const FWeatherGridInfo& Info = WeatherGrid.GetInfo();
+	if (PreviousCells.Num() == CurrentCells.Num())
+	{
+		for (int32 CellIndex = 0; CellIndex < CurrentCells.Num(); ++CellIndex)
+		{
+			if (PreviousCells[CellIndex].WeatherType != CurrentCells[CellIndex].WeatherType)
+			{
+				OnWeatherTypeChanged.Broadcast(
+					FWeatherCellCoord(CellIndex % Info.Dimensions.X, CellIndex / Info.Dimensions.X),
+					PreviousCells[CellIndex].WeatherType,
+					CurrentCells[CellIndex].WeatherType);
+			}
+		}
+	}
+
+	LocalWeatherEventElapsedSeconds += FMath::Max(StepSeconds, 0.0f);
+	FVector SampleLocation = Info.GridBounds.GetCenter();
+	if (const APlayerCameraManager* Camera = UGameplayStatics::GetPlayerCameraManager(this, 0))
+	{
+		SampleLocation = Camera->GetCameraLocation();
+		SampleLocation.Z = Info.GridBounds.GetCenter().Z;
+	}
+	const FWeatherSample CurrentLocalWeather = WeatherGrid.GetWeatherAtLocationBilinear(SampleLocation);
+	if (!CurrentLocalWeather.bIsValid)
+	{
+		return;
+	}
+
+	const float Threshold = FMath::Max(WeatherSimulationSettings.LocalWeatherChangeThreshold, 0.0f);
+	const FWeatherCellState& Current = CurrentLocalWeather.State;
+	const FWeatherCellState& Previous = LastBroadcastLocalWeather.State;
+	const bool bCategoricalChanged = !LastBroadcastLocalWeather.bIsValid
+		|| Current.WeatherType != Previous.WeatherType
+		|| Current.bIsRaining != Previous.bIsRaining
+		|| Current.bIsStorm != Previous.bIsStorm;
+	const bool bContinuousChanged = !LastBroadcastLocalWeather.bIsValid
+		|| FMath::Abs(Current.CloudCoverage - Previous.CloudCoverage) >= Threshold
+		|| FMath::Abs(Current.CloudDensity - Previous.CloudDensity) >= Threshold
+		|| FMath::Abs(Current.Humidity - Previous.Humidity) >= Threshold
+		|| FMath::Abs(Current.Storminess - Previous.Storminess) >= Threshold
+		|| FMath::Abs(Current.RainIntensity - Previous.RainIntensity) >= Threshold
+		|| FMath::Abs(Current.LightningPotential - Previous.LightningPotential) >= Threshold
+		|| FMath::Abs(Current.TemperatureCelsius - Previous.TemperatureCelsius) >= Threshold * 50.0f
+		|| FMath::Abs(Current.PressureHpa - Previous.PressureHpa) >= Threshold * 100.0f;
+	if ((bCategoricalChanged || bContinuousChanged)
+		&& (!LastBroadcastLocalWeather.bIsValid
+			|| LocalWeatherEventElapsedSeconds >= WeatherSimulationSettings.LocalWeatherEventDebounceSeconds))
+	{
+		LastBroadcastLocalWeather = CurrentLocalWeather;
+		LocalWeatherEventElapsedSeconds = 0.0f;
+		OnLocalWeatherChanged.Broadcast(CurrentLocalWeather);
+	}
+}
+
+FWeatherSample UWeatherStateSubsystem::BuildInterpolatedWeatherSample(
+	const FVector& WorldLocation) const
+{
+	FWeatherSample Current = WeatherGrid.GetWeatherAtLocationBilinear(WorldLocation);
+	if (!Current.bIsValid
+		|| !bWeatherSimulationConfigured
+		|| PreviousWeatherSnapshot.Num() != WeatherGrid.GetInfo().CellCount)
+	{
+		return Current;
+	}
+
+	const FWeatherSample Previous = WeatherGrid.GetWeatherAtLocationBilinear(
+		WorldLocation,
+		PreviousWeatherSnapshot);
+	if (!Previous.bIsValid)
+	{
+		return Current;
+	}
+
+	const float Alpha = FMath::Clamp(
+		WeatherSimulationAccumulator
+			/ FMath::Max(WeatherSimulationSettings.FixedUpdateIntervalSeconds, 0.001f),
+		0.0f,
+		1.0f);
+	Current.State.CloudCoverage = FMath::Lerp(Previous.State.CloudCoverage, Current.State.CloudCoverage, Alpha);
+	Current.State.CloudDensity = FMath::Lerp(Previous.State.CloudDensity, Current.State.CloudDensity, Alpha);
+	Current.State.Humidity = FMath::Lerp(Previous.State.Humidity, Current.State.Humidity, Alpha);
+	Current.State.TemperatureCelsius = FMath::Lerp(
+		Previous.State.TemperatureCelsius,
+		Current.State.TemperatureCelsius,
+		Alpha);
+	Current.State.PressureHpa = FMath::Lerp(Previous.State.PressureHpa, Current.State.PressureHpa, Alpha);
+	Current.State.Storminess = FMath::Lerp(Previous.State.Storminess, Current.State.Storminess, Alpha);
+	Current.State.RainIntensity = FMath::Lerp(Previous.State.RainIntensity, Current.State.RainIntensity, Alpha);
+	Current.State.LightningPotential = FMath::Lerp(
+		Previous.State.LightningPotential,
+		Current.State.LightningPotential,
+		Alpha);
+	return Current;
+}
+
 void UWeatherStateSubsystem::EnsureWindFieldTexture()
 {
 	if (!WindFieldTexture)
@@ -486,7 +1253,7 @@ void UWeatherStateSubsystem::UpdateWindFieldTexture()
 				Info.GridBounds.Min.X + (static_cast<double>(X) + 0.5) / Width * FieldSize.X,
 				Info.GridBounds.Min.Y + (static_cast<double>(Y) + 0.5) / Height * FieldSize.Y,
 				Info.GridBounds.GetCenter().Z);
-			const FWeatherSample Sample = WeatherGrid.GetWeatherAtLocation(SampleLocation);
+			const FWeatherSample Sample = WeatherGrid.GetWeatherAtLocationBilinear(SampleLocation);
 			Pixels[Y * Width + X] = Sample.bIsValid
 				? FWeatherWindMath::EncodeFieldTexel(
 					Sample.State.WindVector,
@@ -554,7 +1321,7 @@ void UWeatherStateSubsystem::PublishWindMaterialParameters()
 			LocalLocation.Y = Camera->GetCameraLocation().Y;
 		}
 
-		const FWeatherSample Sample = WeatherGrid.GetWeatherAtLocation(LocalLocation);
+		const FWeatherSample Sample = WeatherGrid.GetWeatherAtLocationBilinear(LocalLocation);
 		if (Sample.bIsValid)
 		{
 			LocalWind = Sample.State.WindVector;

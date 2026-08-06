@@ -133,6 +133,71 @@ bool UWeatherTypeLookupDataAsset::GetPresentationProfile(
 	return true;
 }
 
+FWeatherFrontLifecycleSettings::FWeatherFrontLifecycleSettings()
+{
+	auto AddArchetype = [this](
+		const EWeatherType Type,
+		const float Weight,
+		const FVector2D SigmaCells,
+		const FVector2D Strength,
+		const FVector2D LifetimeSeconds,
+		const FVector2D MovementMultiplier)
+	{
+		FWeatherFrontArchetype& Archetype = Archetypes.AddDefaulted_GetRef();
+		Archetype.WeatherType = Type;
+		Archetype.SpawnWeight = Weight;
+		Archetype.SigmaCellRange = SigmaCells;
+		Archetype.StrengthRange = Strength;
+		Archetype.LifetimeSecondsRange = LifetimeSeconds;
+		Archetype.MovementMultiplierRange = MovementMultiplier;
+	};
+
+	// The baseline already supplies fair weather. These weights still allow a
+	// clear front to open gaps while keeping severe weather deliberately rare.
+	AddArchetype(
+		EWeatherType::Clear,
+		20.0f,
+		FVector2D(0.8, 1.5),
+		FVector2D(0.5, 1.0),
+		FVector2D(900.0, 1800.0),
+		FVector2D(0.7, 1.0));
+	AddArchetype(
+		EWeatherType::PartlyCloudy,
+		30.0f,
+		FVector2D(0.8, 1.5),
+		FVector2D(0.6, 1.1),
+		FVector2D(1200.0, 2400.0),
+		FVector2D(0.7, 1.1));
+	AddArchetype(
+		EWeatherType::Overcast,
+		25.0f,
+		FVector2D(0.7, 1.3),
+		FVector2D(0.7, 1.2),
+		FVector2D(900.0, 2100.0),
+		FVector2D(0.75, 1.15));
+	AddArchetype(
+		EWeatherType::Rain,
+		15.0f,
+		FVector2D(0.55, 1.0),
+		FVector2D(0.9, 1.4),
+		FVector2D(600.0, 1500.0),
+		FVector2D(0.85, 1.2));
+	AddArchetype(
+		EWeatherType::HeavyRain,
+		7.0f,
+		FVector2D(0.4, 0.75),
+		FVector2D(1.1, 1.7),
+		FVector2D(420.0, 900.0),
+		FVector2D(0.9, 1.25));
+	AddArchetype(
+		EWeatherType::Storm,
+		3.0f,
+		FVector2D(0.3, 0.6),
+		FVector2D(1.4, 2.1),
+		FVector2D(300.0, 720.0),
+		FVector2D(1.0, 1.35));
+}
+
 FWeatherSimulationSettings::FWeatherSimulationSettings()
 {
 	BaselineValues.CloudCoverage = 0.05f;
@@ -552,6 +617,103 @@ int32 FWeatherSimulationMath::SelectGeneratedPresetIndex(
 	}
 
 	return OrderedIndices[FMath::Abs(SeedIndex) % OrderedIndices.Num()];
+}
+
+int32 FWeatherSimulationMath::CalculateLifecycleTargetCount(
+	const FWeatherFrontLifecycleSettings& Settings,
+	const FWeatherGridInfo& GridInfo,
+	const int32 MaximumSeedCount)
+{
+	if (!Settings.bEnabled || !GridInfo.bIsValid || GridInfo.CellCount <= 0)
+	{
+		return 0;
+	}
+
+	const int32 Minimum = FMath::Max(Settings.MinimumFrontCount, 0);
+	const int32 Maximum = FMath::Max(Settings.MaximumFrontCount, Minimum);
+	const float CellsPerFront = FMath::Max(Settings.TargetCellsPerFront, 1.0f);
+	const int32 AreaTarget = FMath::CeilToInt(
+		static_cast<float>(GridInfo.CellCount) / CellsPerFront);
+	return FMath::Clamp(
+		FMath::Clamp(AreaTarget, Minimum, Maximum),
+		0,
+		FMath::Max(MaximumSeedCount, 0));
+}
+
+int32 FWeatherSimulationMath::SelectWeightedArchetypeIndex(
+	const TArray<FWeatherFrontArchetype>& Archetypes,
+	FRandomStream& RandomStream)
+{
+	double TotalWeight = 0.0;
+	for (const FWeatherFrontArchetype& Archetype : Archetypes)
+	{
+		if (Archetype.bEnabled)
+		{
+			TotalWeight += FMath::Max(static_cast<double>(Archetype.SpawnWeight), 0.0);
+		}
+	}
+
+	if (TotalWeight <= UE_DOUBLE_SMALL_NUMBER)
+	{
+		return INDEX_NONE;
+	}
+
+	const double Selection = RandomStream.FRand() * TotalWeight;
+	double AccumulatedWeight = 0.0;
+	int32 LastValidIndex = INDEX_NONE;
+	for (int32 ArchetypeIndex = 0; ArchetypeIndex < Archetypes.Num(); ++ArchetypeIndex)
+	{
+		const FWeatherFrontArchetype& Archetype = Archetypes[ArchetypeIndex];
+		const double Weight = Archetype.bEnabled
+			? FMath::Max(static_cast<double>(Archetype.SpawnWeight), 0.0)
+			: 0.0;
+		if (Weight <= 0.0)
+		{
+			continue;
+		}
+
+		LastValidIndex = ArchetypeIndex;
+		AccumulatedWeight += Weight;
+		if (Selection < AccumulatedWeight)
+		{
+			return ArchetypeIndex;
+		}
+	}
+	return LastValidIndex;
+}
+
+FVector2D FWeatherSimulationMath::GenerateUpwindBoundaryPosition(
+	const FWeatherGridInfo& GridInfo,
+	const FVector2D& WindDirection,
+	const float InsetCellFraction,
+	FRandomStream& RandomStream)
+{
+	if (!GridInfo.bIsValid || !GridInfo.GridBounds.IsValid)
+	{
+		return FVector2D::ZeroVector;
+	}
+
+	const FVector2D Minimum(GridInfo.GridBounds.Min.X, GridInfo.GridBounds.Min.Y);
+	const FVector2D Maximum(GridInfo.GridBounds.Max.X, GridInfo.GridBounds.Max.Y);
+	const FVector2D Size = Maximum - Minimum;
+	const double DesiredInset = GridInfo.CellSize
+		* FMath::Clamp(static_cast<double>(InsetCellFraction), 0.0, 0.49);
+	const double InsetX = FMath::Min(DesiredInset, Size.X * 0.49);
+	const double InsetY = FMath::Min(DesiredInset, Size.Y * 0.49);
+	const FVector2D Direction = WindDirection.GetSafeNormal(
+		UE_SMALL_NUMBER,
+		FVector2D(1.0, 0.0));
+
+	if (FMath::Abs(Direction.X) >= FMath::Abs(Direction.Y))
+	{
+		return FVector2D(
+			Direction.X >= 0.0 ? Minimum.X + InsetX : Maximum.X - InsetX,
+			RandomStream.FRandRange(Minimum.Y + InsetY, Maximum.Y - InsetY));
+	}
+
+	return FVector2D(
+		RandomStream.FRandRange(Minimum.X + InsetX, Maximum.X - InsetX),
+		Direction.Y >= 0.0 ? Minimum.Y + InsetY : Maximum.Y - InsetY);
 }
 
 EWeatherType FWeatherSimulationMath::ClassifyBuiltIn(

@@ -7,6 +7,7 @@
 #include "Tickable.h"
 #include "WeatherDateTime.h"
 #include "WeatherGrid.h"
+#include "WeatherSimulation.h"
 #include "WeatherWind.h"
 #include "WeatherStateSubsystem.generated.h"
 
@@ -20,6 +21,20 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(
 	FWeatherDateTimeChangedSignature,
 	FWeatherDateTime,
 	DateTime);
+
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(
+	FWeatherTypeChangedSignature,
+	FWeatherCellCoord,
+	CellCoord,
+	EWeatherType,
+	PreviousType,
+	EWeatherType,
+	NewType);
+
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(
+	FWeatherLocalWeatherChangedSignature,
+	FWeatherSample,
+	WeatherSample);
 
 UCLASS()
 class WEATHERENVIRONMENTSYSTEM_API UWeatherStateSubsystem
@@ -100,6 +115,9 @@ public:
 	FWeatherSample GetWeatherAtLocation(const FVector& WorldLocation) const;
 
 	UFUNCTION(BlueprintPure, Category = "Weather|Grid")
+	bool GetWeatherTypeAtLocation(const FVector& WorldLocation, EWeatherType& OutWeatherType) const;
+
+	UFUNCTION(BlueprintPure, Category = "Weather|Grid")
 	TArray<FWeatherCellState> GetCellStatesForBounds(const FBox& WorldBounds) const;
 
 	UFUNCTION(BlueprintPure, Category = "Weather|Grid")
@@ -137,6 +155,41 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Weather|Wind")
 	FLinearColor GetWindFieldOriginSize() const;
 
+	/** Applies deterministic seed, propagation, threshold, and classification settings. */
+	UFUNCTION(BlueprintCallable, Category = "Weather|Simulation")
+	void ConfigureWeatherSimulation(const FWeatherSimulationSettings& Settings);
+
+	/** Adds a materialized seed and returns its stable ID, or an invalid ID when rejected. */
+	UFUNCTION(BlueprintCallable, Category = "Weather|Simulation")
+	FGuid AddSeed(const FWeatherSeed& Seed);
+
+	UFUNCTION(BlueprintCallable, Category = "Weather|Simulation")
+	bool RemoveSeed(FGuid SeedId);
+
+	UFUNCTION(BlueprintCallable, Category = "Weather|Simulation")
+	bool MoveSeed(FGuid SeedId, FVector2D NewPosition);
+
+	UFUNCTION(BlueprintCallable, Category = "Weather|Simulation")
+	void ClearSeeds();
+
+	/** Generates deterministic seeds inside the current grid. */
+	UFUNCTION(BlueprintCallable, Category = "Weather|Simulation")
+	int32 GenerateSeedSet(int32 SeedCount, bool bReplaceExisting = true);
+
+	/** Immediately fills the lifecycle-managed population, or performs one gradual replenishment pass. */
+	UFUNCTION(BlueprintCallable, Category = "Weather|Simulation|Lifecycle")
+	int32 ReplenishWeatherFronts(bool bFillImmediately = true);
+
+	UFUNCTION(BlueprintPure, Category = "Weather|Simulation|Lifecycle")
+	int32 GetTargetWeatherFrontCount() const;
+
+	/** Advances an exact number of fixed weather steps, independently of frame delta. */
+	UFUNCTION(BlueprintCallable, Category = "Weather|Simulation", meta = (ClampMin = "1"))
+	void StepSimulation(int32 StepCount = 1);
+
+	UFUNCTION(BlueprintPure, Category = "Weather|Simulation")
+	TArray<FWeatherSeed> GetActiveSeeds() const { return ActiveSeeds; }
+
 	UPROPERTY(BlueprintAssignable, Category = "Weather|Clock")
 	FWeatherDateTimeChangedSignature OnMinuteChanged;
 
@@ -145,6 +198,12 @@ public:
 
 	UPROPERTY(BlueprintAssignable, Category = "Weather|Clock")
 	FWeatherDateTimeChangedSignature OnDayChanged;
+
+	UPROPERTY(BlueprintAssignable, Category = "Weather|Simulation")
+	FWeatherTypeChangedSignature OnWeatherTypeChanged;
+
+	UPROPERTY(BlueprintAssignable, Category = "Weather|Simulation")
+	FWeatherLocalWeatherChangedSignature OnLocalWeatherChanged;
 
 	bool RegisterController(AWeatherEnvironmentController* Controller);
 	void UnregisterController(AWeatherEnvironmentController* Controller);
@@ -160,6 +219,19 @@ private:
 	void BroadcastBoundaryChanges(const FDateTime& Previous, const FDateTime& Current);
 	void TickWind(float DeltaTime);
 	void StepWind(float StepSeconds);
+	void TickWeatherSimulation(float DeltaTime);
+	void StepWeatherSimulation(float StepSeconds);
+	void ApplyInitialSeeds();
+	void TickWeatherFrontLifecycle(float StepSeconds);
+	int32 MaintainWeatherFrontPopulation(bool bFillImmediately);
+	bool SpawnLifecycleFront(bool bAtUpwindBoundary);
+	FVector2D FindLifecycleSpawnPosition(bool bAtUpwindBoundary);
+	FVector2D GetPrevailingWindDirection() const;
+	void ResolveSeedValues(FWeatherSeed& Seed);
+	void BroadcastWeatherChanges(
+		const TArray<FWeatherCellState>& PreviousCells,
+		float StepSeconds);
+	FWeatherSample BuildInterpolatedWeatherSample(const FVector& WorldLocation) const;
 	void EnsureWindFieldTexture();
 	void UpdateWindFieldTexture();
 	void PublishWindMaterialParameters();
@@ -176,6 +248,22 @@ private:
 	float WindSimulationAccumulator = 0.0f;
 	bool bWindConfigured = false;
 	bool bWindFieldDirty = false;
+	FWeatherSimulationSettings WeatherSimulationSettings;
+	float WeatherSimulationAccumulator = 0.0f;
+	double WeatherSimulationTimeSeconds = 0.0;
+	bool bWeatherSimulationConfigured = false;
+	bool bInitialSeedsApplied = false;
+	bool bInitialGeneratedSeedsApplied = false;
+	bool bInitialLifecyclePopulationApplied = false;
+	float WeatherFrontLifecycleAccumulator = 0.0f;
+	int32 ConfiguredEnvironmentSeed = 0;
+	int32 NextSeedSerial = 0;
+	FRandomStream WeatherRandomStream;
+	TArray<FWeatherSeed> ActiveSeeds;
+	TArray<FWeatherCellState> PreviousWeatherSnapshot;
+	TArray<float> WeatherTypeDurations;
+	FWeatherSample LastBroadcastLocalWeather;
+	float LocalWeatherEventElapsedSeconds = 0.0f;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UTexture2D> WindFieldTexture;
