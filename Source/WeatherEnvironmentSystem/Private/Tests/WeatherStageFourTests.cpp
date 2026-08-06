@@ -252,11 +252,21 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 bool FWeatherDeterminismAndBoundedWorkTest::RunTest(const FString& Parameters)
 {
 	FWeatherSimulationSettings DefaultSettings;
-	TestEqual(TEXT("A new profile begins with four generated weather fronts"),
-		DefaultSettings.InitialGeneratedSeedCount, 4);
+	TestEqual(TEXT("The production lifecycle replaces the legacy fixed initial count"),
+		DefaultSettings.InitialGeneratedSeedCount, 0);
+	TestTrue(TEXT("The production front lifecycle is enabled by default"),
+		DefaultSettings.FrontLifecycle.bEnabled);
 	FWeatherGridInfo DefaultGridInfo;
 	DefaultGridInfo.bIsValid = true;
 	DefaultGridInfo.CellSize = 1000.0;
+	DefaultGridInfo.CellCount = 12;
+	DefaultGridInfo.GridBounds = FBox(FVector::ZeroVector, FVector(4000.0, 3000.0, 1.0));
+	TestEqual(TEXT("A twelve-cell test grid targets four active fronts"),
+		FWeatherSimulationMath::CalculateLifecycleTargetCount(
+			DefaultSettings.FrontLifecycle,
+			DefaultGridInfo,
+			DefaultSettings.MaximumSeedCount),
+		4);
 	FRandomStream SigmaStream(1337);
 	const double DefaultSigma = FWeatherSimulationMath::SampleGeneratedSigma(
 		DefaultSettings,
@@ -378,6 +388,111 @@ bool FWeatherDeterminismAndBoundedWorkTest::RunTest(const FString& Parameters)
 		&EvaluatedCellCount);
 	TestTrue(TEXT("Neighborhood-limited propagation avoids seed-by-entire-grid work"),
 		EvaluatedCellCount < static_cast<int64>(StressSeeds.Num()) * StressGrid.GetInfo().CellCount / 8);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FWeatherFrontLifecyclePolicyTest,
+	"WeatherEnvironment.Stage4.Lifecycle.TargetWeightingAndUpwindSpawning",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FWeatherFrontLifecyclePolicyTest::RunTest(const FString& Parameters)
+{
+	FWeatherSimulationSettings Settings;
+	FWeatherGridInfo GridInfo;
+	GridInfo.bIsValid = true;
+	GridInfo.CellSize = 100.0;
+	GridInfo.GridBounds = FBox(FVector::ZeroVector, FVector(400.0, 300.0, 1.0));
+
+	GridInfo.CellCount = 100;
+	TestEqual(TEXT("Target population scales with grid area"),
+		FWeatherSimulationMath::CalculateLifecycleTargetCount(
+			Settings.FrontLifecycle,
+			GridInfo,
+			Settings.MaximumSeedCount),
+		7);
+	GridInfo.CellCount = 4096;
+	TestEqual(TEXT("Target population respects the lifecycle maximum"),
+		FWeatherSimulationMath::CalculateLifecycleTargetCount(
+			Settings.FrontLifecycle,
+			GridInfo,
+			Settings.MaximumSeedCount),
+		Settings.FrontLifecycle.MaximumFrontCount);
+	TestEqual(TEXT("Target population also respects the global allocation cap"),
+		FWeatherSimulationMath::CalculateLifecycleTargetCount(
+			Settings.FrontLifecycle,
+			GridInfo,
+			10),
+		10);
+
+	FRandomStream SelectionA(4815);
+	FRandomStream SelectionB(4815);
+	TMap<EWeatherType, int32> SelectionCounts;
+	bool bSelectionReplayMatched = true;
+	for (int32 SelectionIndex = 0; SelectionIndex < 10000; ++SelectionIndex)
+	{
+		const int32 IndexA = FWeatherSimulationMath::SelectWeightedArchetypeIndex(
+			Settings.FrontLifecycle.Archetypes,
+			SelectionA);
+		const int32 IndexB = FWeatherSimulationMath::SelectWeightedArchetypeIndex(
+			Settings.FrontLifecycle.Archetypes,
+			SelectionB);
+		bSelectionReplayMatched &= IndexA == IndexB;
+		if (Settings.FrontLifecycle.Archetypes.IsValidIndex(IndexA))
+		{
+			++SelectionCounts.FindOrAdd(
+				Settings.FrontLifecycle.Archetypes[IndexA].WeatherType);
+		}
+	}
+	TestTrue(TEXT("Weighted lifecycle selection replays deterministically"),
+		bSelectionReplayMatched);
+	TestTrue(TEXT("Partly cloudy fronts are more common than storm fronts"),
+		SelectionCounts.FindRef(EWeatherType::PartlyCloudy)
+			> SelectionCounts.FindRef(EWeatherType::Storm) * 5);
+	TestTrue(TEXT("Storm fronts remain possible with the production weighting"),
+		SelectionCounts.FindRef(EWeatherType::Storm) > 0);
+
+	TArray<FWeatherFrontArchetype> DisabledArchetypes = Settings.FrontLifecycle.Archetypes;
+	for (FWeatherFrontArchetype& Archetype : DisabledArchetypes)
+	{
+		Archetype.bEnabled = false;
+	}
+	TestEqual(TEXT("No eligible archetype produces no selection"),
+		FWeatherSimulationMath::SelectWeightedArchetypeIndex(
+			DisabledArchetypes,
+			SelectionA),
+		INDEX_NONE);
+
+	GridInfo.CellCount = 12;
+	FRandomStream PositionStream(77);
+	const FVector2D FromWest = FWeatherSimulationMath::GenerateUpwindBoundaryPosition(
+		GridInfo,
+		FVector2D(1.0, 0.0),
+		0.15f,
+		PositionStream);
+	const FVector2D FromEast = FWeatherSimulationMath::GenerateUpwindBoundaryPosition(
+		GridInfo,
+		FVector2D(-1.0, 0.0),
+		0.15f,
+		PositionStream);
+	const FVector2D FromSouth = FWeatherSimulationMath::GenerateUpwindBoundaryPosition(
+		GridInfo,
+		FVector2D(0.0, 1.0),
+		0.15f,
+		PositionStream);
+	const FVector2D FromNorth = FWeatherSimulationMath::GenerateUpwindBoundaryPosition(
+		GridInfo,
+		FVector2D(0.0, -1.0),
+		0.15f,
+		PositionStream);
+	TestTrue(TEXT("Positive-X wind spawns on the west edge"),
+		FMath::IsNearlyEqual(FromWest.X, 15.0, 0.001));
+	TestTrue(TEXT("Negative-X wind spawns on the east edge"),
+		FMath::IsNearlyEqual(FromEast.X, 385.0, 0.001));
+	TestTrue(TEXT("Positive-Y wind spawns on the south edge"),
+		FMath::IsNearlyEqual(FromSouth.Y, 15.0, 0.001));
+	TestTrue(TEXT("Negative-Y wind spawns on the north edge"),
+		FMath::IsNearlyEqual(FromNorth.Y, 285.0, 0.001));
 	return true;
 }
 

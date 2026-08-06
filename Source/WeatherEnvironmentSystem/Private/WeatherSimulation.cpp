@@ -700,9 +700,11 @@ FVector2D FWeatherSimulationMath::GenerateUpwindBoundaryPosition(
 		* FMath::Clamp(static_cast<double>(InsetCellFraction), 0.0, 0.49);
 	const double InsetX = FMath::Min(DesiredInset, Size.X * 0.49);
 	const double InsetY = FMath::Min(DesiredInset, Size.Y * 0.49);
-	const FVector2D Direction = WindDirection.GetSafeNormal(
-		UE_SMALL_NUMBER,
-		FVector2D(1.0, 0.0));
+	FVector2D Direction = WindDirection.GetSafeNormal();
+	if (Direction.IsNearlyZero())
+	{
+		Direction = FVector2D(1.0, 0.0);
+	}
 
 	if (FMath::Abs(Direction.X) >= FMath::Abs(Direction.Y))
 	{

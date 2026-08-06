@@ -629,11 +629,11 @@ int32 UWeatherStateSubsystem::MaintainWeatherFrontPopulation(const bool bFillImm
 	const FWeatherFrontLifecycleSettings& Lifecycle =
 		WeatherSimulationSettings.FrontLifecycle;
 	const int32 TargetCount = GetTargetWeatherFrontCount();
-	const int32 ManagedCount = ActiveSeeds.CountByPredicate(
-		[](const FWeatherSeed& Seed)
-		{
-			return Seed.bManagedByLifecycle;
-		});
+	int32 ManagedCount = 0;
+	for (const FWeatherSeed& Seed : ActiveSeeds)
+	{
+		ManagedCount += Seed.bManagedByLifecycle ? 1 : 0;
+	}
 	const int32 PopulationCount = Lifecycle.bCountExternalSeedsTowardTarget
 		? ActiveSeeds.Num()
 		: ManagedCount;
@@ -729,7 +729,8 @@ FVector2D UWeatherStateSubsystem::FindLifecycleSpawnPosition(
 	const double MinimumSpacingSquared = FMath::Square(MinimumSpacing);
 	const FVector2D PrevailingDirection = GetPrevailingWindDirection();
 
-	FVector2D BestCandidate = Info.GridBounds.GetCenter();
+	const FVector GridCenter = Info.GridBounds.GetCenter();
+	FVector2D BestCandidate(GridCenter.X, GridCenter.Y);
 	double BestNearestDistanceSquared = -1.0;
 	for (int32 Attempt = 0; Attempt < Lifecycle.PositionAttempts; ++Attempt)
 	{
@@ -796,7 +797,11 @@ FVector2D UWeatherStateSubsystem::GetPrevailingWindDirection() const
 	const FVector2D DefaultDirection(
 		WindSettings.DefaultDirection.X,
 		WindSettings.DefaultDirection.Y);
-	return DefaultDirection.GetSafeNormal(UE_SMALL_NUMBER, FVector2D(1.0, 0.0));
+	if (!DefaultDirection.IsNearlyZero())
+	{
+		return DefaultDirection.GetSafeNormal();
+	}
+	return FVector2D(1.0, 0.0);
 }
 
 void UWeatherStateSubsystem::StepSimulation(const int32 StepCount)

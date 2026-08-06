@@ -8,6 +8,7 @@
 #include "Components/SceneComponent.h"
 #include "Components/SkyLightComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Components/WeatherGridDebugComponent.h"
 #include "Curves/CurveFloat.h"
 #include "Curves/CurveLinearColor.h"
 #include "DrawDebugHelpers.h"
@@ -30,6 +31,10 @@ AWeatherEnvironmentController::AWeatherEnvironmentController()
 
 	SceneRoot = CreateDefaultSubobject<USceneComponent>(TEXT("SceneRoot"));
 	SetRootComponent(SceneRoot);
+
+#if WITH_EDITORONLY_DATA
+	WeatherGridDebugComponent = CreateDefaultSubobject<UWeatherGridDebugComponent>(TEXT("WeatherGridDebug"));
+#endif
 
 	MoonMeshComponent = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("MoonMesh"));
 	MoonMeshComponent->SetupAttachment(SceneRoot);
@@ -103,6 +108,7 @@ void AWeatherEnvironmentController::BeginPlay()
 	}
 	StateSubsystem->ConfigureWind(GetWindSettings());
 	StateSubsystem->SetWindDirector(WindDirector);
+	StateSubsystem->ConfigureWeatherSimulation(GetSimulationSettings());
 
 	ConfigureMoonMesh();
 	ConfigureSkyDomeMesh();
@@ -183,6 +189,7 @@ void AWeatherEnvironmentController::RefreshEnvironment()
 	{
 		StateSubsystem->ConfigureWind(GetWindSettings());
 		StateSubsystem->SetWindDirector(WindDirector);
+		StateSubsystem->ConfigureWeatherSimulation(GetSimulationSettings());
 	}
 	UpdateEnvironment(0.0f, true);
 }
@@ -228,6 +235,11 @@ const FWeatherGridDefinition& AWeatherEnvironmentController::GetGridDefinition()
 const FWeatherWindSettings& AWeatherEnvironmentController::GetWindSettings() const
 {
 	return EnvironmentProfile ? EnvironmentProfile->Wind : WindSettings;
+}
+
+const FWeatherSimulationSettings& AWeatherEnvironmentController::GetSimulationSettings() const
+{
+	return EnvironmentProfile ? EnvironmentProfile->Simulation : SimulationSettings;
 }
 
 void AWeatherEnvironmentController::RebuildGrid()
@@ -279,6 +291,83 @@ FWeatherGridInfo AWeatherEnvironmentController::GetGridInfo() const
 {
 	const FWeatherGrid* Grid = GetGridForDebug();
 	return Grid ? Grid->GetInfo() : FWeatherGridInfo();
+}
+
+const FWeatherGrid* AWeatherEnvironmentController::GetWeatherGridForDebugVisualization() const
+{
+	return GetGridForDebug();
+}
+
+FColor AWeatherEnvironmentController::GetWeatherTypeDebugColor(
+	const EWeatherType WeatherType)
+{
+	switch (WeatherType)
+	{
+	case EWeatherType::Rain:
+	case EWeatherType::HeavyRain:
+		return FColor(60, 100, 255);
+	case EWeatherType::Storm:
+		return FColor(180, 80, 255);
+	case EWeatherType::Overcast:
+		return FColor(160, 160, 170);
+	case EWeatherType::PartlyCloudy:
+		return FColor(130, 200, 220);
+	default:
+		return FColor(80, 180, 255);
+	}
+}
+
+FString AWeatherEnvironmentController::BuildWeatherCellDebugLabel(
+	const FWeatherCellCoord& Coord,
+	const FWeatherCellState& State) const
+{
+	FString Label;
+	const auto AppendLine = [&Label](const FString& Line)
+	{
+		if (!Label.IsEmpty())
+		{
+			Label += TEXT("\n");
+		}
+		Label += Line;
+	};
+
+	if (GridDebugSettings.bDrawCoordinates)
+	{
+		AppendLine(FString::Printf(TEXT("(%d, %d)"), Coord.X, Coord.Y));
+	}
+	if (GridDebugSettings.bDrawWeatherType)
+	{
+		AppendLine(UEnum::GetDisplayValueAsText(State.WeatherType).ToString());
+	}
+	if (GridDebugSettings.bDrawWindSpeed)
+	{
+		AppendLine(FString::Printf(TEXT("Wind %.1f cm/s"), State.WindVector.Size()));
+	}
+	if (GridDebugSettings.bDrawCloudCoverage)
+	{
+		AppendLine(FString::Printf(TEXT("Cloud %.2f"), State.CloudCoverage));
+	}
+	if (GridDebugSettings.bDrawHumidity)
+	{
+		AppendLine(FString::Printf(TEXT("Humidity %.2f"), State.Humidity));
+	}
+	if (GridDebugSettings.bDrawTemperature)
+	{
+		AppendLine(FString::Printf(TEXT("Temp %.1f C"), State.TemperatureCelsius));
+	}
+	if (GridDebugSettings.bDrawPressure)
+	{
+		AppendLine(FString::Printf(TEXT("Pressure %.1f hPa"), State.PressureHpa));
+	}
+	if (GridDebugSettings.bDrawRainIntensity)
+	{
+		AppendLine(FString::Printf(TEXT("Rain %.2f"), State.RainIntensity));
+	}
+	if (GridDebugSettings.bDrawStorminess)
+	{
+		AppendLine(FString::Printf(TEXT("Storm %.2f"), State.Storminess));
+	}
+	return Label;
 }
 
 void AWeatherEnvironmentController::SetWindDirector(AWeatherWindDirector* NewWindDirector)
@@ -506,25 +595,7 @@ void AWeatherEnvironmentController::DrawWeatherGridDebug() const
 				continue;
 			}
 
-			FColor CellColor = FColor(80, 180, 255);
-			switch (State->WeatherType)
-			{
-			case EWeatherType::Rain:
-			case EWeatherType::HeavyRain:
-				CellColor = FColor(60, 100, 255);
-				break;
-			case EWeatherType::Storm:
-				CellColor = FColor(180, 80, 255);
-				break;
-			case EWeatherType::Overcast:
-				CellColor = FColor(160, 160, 170);
-				break;
-			case EWeatherType::PartlyCloudy:
-				CellColor = FColor(130, 200, 220);
-				break;
-			default:
-				break;
-			}
+			const FColor CellColor = GetWeatherTypeDebugColor(State->WeatherType);
 
 			if (GridDebugSettings.bDrawGridLines)
 			{
@@ -568,43 +639,7 @@ void AWeatherEnvironmentController::DrawWeatherGridDebug() const
 					GridDebugSettings.LineThickness);
 			}
 
-			FString Label;
-			if (GridDebugSettings.bDrawCoordinates)
-			{
-				Label += FString::Printf(TEXT("(%d, %d)"), X, Y);
-			}
-			if (GridDebugSettings.bDrawWeatherType)
-			{
-				Label += FString::Printf(TEXT("\n%s"), *UEnum::GetValueAsString(State->WeatherType));
-			}
-			if (GridDebugSettings.bDrawWindSpeed)
-			{
-				Label += FString::Printf(TEXT("\nWind %.1f cm/s"), State->WindVector.Size());
-			}
-			if (GridDebugSettings.bDrawCloudCoverage)
-			{
-				Label += FString::Printf(TEXT("\nCloud %.2f"), State->CloudCoverage);
-			}
-			if (GridDebugSettings.bDrawHumidity)
-			{
-				Label += FString::Printf(TEXT("\nHumidity %.2f"), State->Humidity);
-			}
-			if (GridDebugSettings.bDrawTemperature)
-			{
-				Label += FString::Printf(TEXT("\nTemp %.1f C"), State->TemperatureCelsius);
-			}
-			if (GridDebugSettings.bDrawPressure)
-			{
-				Label += FString::Printf(TEXT("\nPressure %.1f hPa"), State->PressureHpa);
-			}
-			if (GridDebugSettings.bDrawRainIntensity)
-			{
-				Label += FString::Printf(TEXT("\nRain %.2f"), State->RainIntensity);
-			}
-			if (GridDebugSettings.bDrawStorminess)
-			{
-				Label += FString::Printf(TEXT("\nStorm %.2f"), State->Storminess);
-			}
+			const FString Label = BuildWeatherCellDebugLabel(Coord, *State);
 
 			if (!Label.IsEmpty())
 			{
