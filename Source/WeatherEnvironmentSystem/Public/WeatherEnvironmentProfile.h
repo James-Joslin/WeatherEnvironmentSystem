@@ -6,6 +6,7 @@
 #include "Engine/DataAsset.h"
 #include "WeatherDateTime.h"
 #include "WeatherGrid.h"
+#include "WeatherPresentation.h"
 #include "WeatherSimulation.h"
 #include "WeatherWind.h"
 #include "WeatherEnvironmentProfile.generated.h"
@@ -263,7 +264,7 @@ public:
 
 	/** Schema version for explicit future migrations. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Version")
-	int32 DataVersion = 6;
+	int32 DataVersion = 7;
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weather")
 	FWeatherClockSettings Clock;
@@ -285,4 +286,7 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weather")
 	FWeatherSimulationSettings Simulation;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weather")
+	FWeatherPresentationSettings Presentation;
 };

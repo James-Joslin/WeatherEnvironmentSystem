@@ -18,6 +18,7 @@ public class WeatherEnvironmentSystem : ModuleRules
 
 		PrivateDependencyModuleNames.AddRange(new string[]
 		{
+			"Niagara",
 			"Projects",
 			"RenderCore"
 		});
