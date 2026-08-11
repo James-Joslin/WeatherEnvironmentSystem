@@ -32,11 +32,22 @@ Keeping the authored effect in game content prevents a future plugin update from
 1. Open `/Game/Weather/VFX/Rain` in the Content Browser.
 2. Right-click empty space and choose **FX > Niagara System**.
 3. Choose **New system from a template**.
-4. Select **Minimal**. If the template is displayed as **Empty** in the current editor layout, use that equivalent minimal sprite template.
+4. Select **Simple Sprite Burst**. This is a standard/stateful emitter template.
 5. Click **Create**.
 6. Name the asset `NS_WeatherRain`.
 7. Open it and rename its emitter `NE_WeatherRain_Near`.
 8. Save the system.
+
+Do not select **Minimal Lightweight** or another Lightweight/Stateless template for this walkthrough. A Lightweight emitter displays an orange `LW` badge, `[Lightweight]` in the preview statistics, and `Stateless` at the bottom of the viewport. It uses **Allowed Feature Mask > Execute GPU/Execute CPU** instead of **Sim Target**, and it cannot host the custom Scratch Pad module used later for camera-local, weather-cell-clipped spawning.
+
+If `NS_WeatherRain` already contains the Lightweight emitter, you can preserve the system and its User Parameters:
+
+1. Focus the Niagara editor and press **E** to open **Add Emitter**.
+2. Select **Simple Sprite Burst** and add it.
+3. Rename the new standard emitter `NE_WeatherRain_Near`.
+4. Confirm its stack has separate **Emitter Spawn**, **Emitter Update**, **Particle Spawn**, and **Particle Update** groups.
+5. Select its **Emitter Properties** and confirm **Sim Target** is visible.
+6. Remove the old `LW` emitter only after the standard emitter is present.
 
 Use the Niagara default material while building the behavior:
 
@@ -70,6 +81,8 @@ The preview values make the effect visible inside the Niagara editor. At runtime
 Select `NE_WeatherRain_Near` in **System Overview**.
 
 ### Emitter Properties
+
+These controls appear on the standard/stateful emitter created from **Simple Sprite Burst**. If the panel instead shows **Allowed Feature Mask**, return to the recovery steps in Section 2; that is a Lightweight/Stateless emitter rather than the emitter type required by this guide.
 
 1. Set **Sim Target** to **GPU Compute Sim**.
 2. Disable **Local Space**.
@@ -460,4 +473,3 @@ Before considering the effect finished, verify all of the following:
 - [Creating a GPU sprite effect](https://dev.epicgames.com/documentation/en-us/unreal-engine/how-to-create-a-gpu-sprite-effect-in-niagara-for-unreal-engine)
 - [Niagara Scratch Pad modules](https://dev.epicgames.com/documentation/en-us/unreal-engine/niagara-scratch-pad-modules-in-unreal-engine)
 - [Niagara render-module reference](https://dev.epicgames.com/documentation/unreal-engine/render-module-reference-for-niagara-effects-in-unreal-engine)
-
