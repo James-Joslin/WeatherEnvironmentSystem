@@ -13,6 +13,8 @@ class ALandscapeProxy;
 class ASkyLight;
 class AWeatherWindDirector;
 class UWeatherGridDebugComponent;
+class UWeatherLightningPresenter;
+class UWeatherPrecipitationPresenter;
 class UMaterialInstanceDynamic;
 class UPostProcessComponent;
 class USceneComponent;
@@ -23,6 +25,15 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(
 	FWeatherCelestialTransitionSignature,
 	FWeatherDateTime,
 	DateTime);
+
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(
+	FWeatherControllerLightningSignature,
+	FVector,
+	Location,
+	float,
+	Intensity,
+	FWeatherCellCoord,
+	CellCoord);
 
 UCLASS(BlueprintType)
 class WEATHERENVIRONMENTSYSTEM_API AWeatherEnvironmentController : public AActor
@@ -91,6 +102,14 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "Weather|Astronomy")
 	FWeatherCelestialTransitionSignature OnSunset;
 
+	/** Mirrored from the lightning presenter so gameplay can bind directly to the controller. */
+	UPROPERTY(BlueprintAssignable, Category = "Weather|Lightning")
+	FWeatherControllerLightningSignature OnLightningStrike;
+
+	/** Fires after the distance-based speed-of-sound delay. */
+	UPROPERTY(BlueprintAssignable, Category = "Weather|Lightning")
+	FWeatherControllerLightningSignature OnThunderDue;
+
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weather|Components")
 	TObjectPtr<USceneComponent> SceneRoot;
 
@@ -105,6 +124,12 @@ public:
 	/** Unbound component retained only for the legacy post-process fallback. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weather|Components")
 	TObjectPtr<UPostProcessComponent> SkyPostProcessComponent;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weather|Components")
+	TObjectPtr<UWeatherPrecipitationPresenter> PrecipitationPresenter;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weather|Components")
+	TObjectPtr<UWeatherLightningPresenter> LightningPresenter;
 
 #if WITH_EDITORONLY_DATA
 	/** Anchor for the HUD-independent editor component visualizer. */
@@ -142,6 +167,10 @@ public:
 	/** Used when EnvironmentProfile is unset. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Fallback")
 	FWeatherSimulationSettings SimulationSettings;
+
+	/** Used when EnvironmentProfile is unset. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Weather|Fallback")
+	FWeatherPresentationSettings PresentationSettings;
 
 	/** Explicit landscape sources. When empty, all landscape proxies in the world are discovered. */
 	UPROPERTY(EditInstanceOnly, BlueprintReadWrite, Category = "Weather|Grid")
@@ -210,11 +239,15 @@ private:
 	const FWeatherGridDefinition& GetGridDefinition() const;
 	const FWeatherWindSettings& GetWindSettings() const;
 	const FWeatherSimulationSettings& GetSimulationSettings() const;
+	const FWeatherPresentationSettings& GetPresentationSettings() const;
 
 	void ResolveWorldReferences();
 	void ConfigureMoonMesh();
 	void ConfigureSkyDomeMesh();
 	void InitializeSkyboxMID();
+	void ConfigureWeatherPresentation(UWeatherStateSubsystem* StateSubsystem);
+	void UpdateWeatherPresentation(float DeltaSeconds);
+	void GatherLocalViewLocations(TArray<FVector>& OutViewLocations) const;
 	void UpdateEnvironment(float DeltaSeconds, bool bForce);
 	void UpdateDirectionalLights(const FWeatherCelestialState& CelestialState, double DayFraction);
 	void UpdateMoonVisual(const FWeatherCelestialState& CelestialState);
@@ -230,6 +263,12 @@ private:
 
 	static float SmoothRange(float Value, float Minimum, float Maximum);
 	static float CalculateMoonPhase(const FDateTime& DateTime);
+
+	UFUNCTION()
+	void HandleLightningStrike(FVector Location, float Intensity, FWeatherCellCoord CellCoord);
+
+	UFUNCTION()
+	void HandleThunderDue(FVector Location, float Intensity, FWeatherCellCoord CellCoord);
 
 	UPROPERTY(Transient)
 	TObjectPtr<UMaterialInstanceDynamic> SkyboxMID;
