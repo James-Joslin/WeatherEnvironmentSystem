@@ -4,7 +4,7 @@ Weather Environment System is a standalone Unreal Engine 5.7 plugin for the game
 
 ## Current implementation
 
-Version 0.4.3 currently provides Stages 1–4:
+Version 0.5.0 currently provides Stages 1–5:
 
 - a persistent session clock owned by `WeatherStateSubsystem`;
 - configurable time scale, pause, date, and time controls;
@@ -30,8 +30,12 @@ Version 0.4.3 currently provides Stages 1–4:
 - ordered, priority-based `WeatherTypeLookupDataAsset` classification rules.
 - an area-scaled deterministic front lifecycle with weighted weather archetypes, minimum spacing, finite lifetimes, and upwind replenishment;
 - Blueprint controls for inspecting the target front count and forcing an immediate or gradual replenishment pass.
+- a lazy, bounded Niagara rain-component pool selected around every local player view;
+- per-cell rain intensity, wind, extent, spawn-rate, and fade parameters without respawning during intensity changes;
+- deterministic per-storm-cell lightning timers and centre-weighted strike placement;
+- optional terrain/water traces, bounded non-looping Niagara strikes, strike-start hooks, and speed-of-sound thunder hooks.
 
-Precipitation, local volumetric clouds, and Ocean System integration are later milestones. See the repository-level implementation plan for the complete staged plan.
+Local volumetric clouds and Ocean System integration are later milestones. See the repository-level implementation plan for the complete staged plan.
 
 ## Initial Unreal setup
 
@@ -63,6 +67,9 @@ For the complete level and material instructions, see:
 - [CUSTOM_SKYBOX_MATERIAL_SETUP.md](CUSTOM_SKYBOX_MATERIAL_SETUP.md) — legacy fallback only
 - [WIND_FOLIAGE_SETUP.md](WIND_FOLIAGE_SETUP.md)
 - [WEATHER_SIMULATION_SETUP.md](WEATHER_SIMULATION_SETUP.md)
+- [WEATHER_EFFECTS_SETUP.md](WEATHER_EFFECTS_SETUP.md)
+- [NIAGARA_RAIN_SYSTEM_SETUP.md](NIAGARA_RAIN_SYSTEM_SETUP.md)
+- [NIAGARA_LIGHTNING_SYSTEM_SETUP.md](NIAGARA_LIGHTNING_SYSTEM_SETUP.md)
 
 ## Blueprint clock and Widget UI
 
@@ -170,6 +177,7 @@ WeatherEnvironment.Stage1
 WeatherEnvironment.Stage2
 WeatherEnvironment.Stage3
 WeatherEnvironment.Stage4
+WeatherEnvironment.Stage5
 ```
 
-Open **Tools > Test Automation**, filter for `WeatherEnvironment`, and run the clock, astronomy, grid, wind-route, field-mapping, Gaussian propagation, advection, determinism, and classification tests.
+Open **Tools > Test Automation**, filter for `WeatherEnvironment`, and run the clock, astronomy, grid, wind-route, field-mapping, simulation, rain-pool selection, fade, deterministic lightning, and trace-failure tests.

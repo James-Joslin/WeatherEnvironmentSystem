@@ -9,6 +9,8 @@
 #include "Components/SkyLightComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/WeatherGridDebugComponent.h"
+#include "Components/WeatherLightningPresenter.h"
+#include "Components/WeatherPrecipitationPresenter.h"
 #include "Curves/CurveFloat.h"
 #include "Curves/CurveLinearColor.h"
 #include "DrawDebugHelpers.h"
@@ -17,10 +19,12 @@
 #include "Engine/SkyLight.h"
 #include "Engine/TextureCube.h"
 #include "EngineUtils.h"
+#include "GameFramework/PlayerController.h"
 #include "Kismet/GameplayStatics.h"
 #include "LandscapeProxy.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
+#include "Camera/PlayerCameraManager.h"
 #include "UObject/ConstructorHelpers.h"
 #include "WeatherStateSubsystem.h"
 
@@ -31,6 +35,11 @@ AWeatherEnvironmentController::AWeatherEnvironmentController()
 
 	SceneRoot = CreateDefaultSubobject<USceneComponent>(TEXT("SceneRoot"));
 	SetRootComponent(SceneRoot);
+
+	PrecipitationPresenter = CreateDefaultSubobject<UWeatherPrecipitationPresenter>(
+		TEXT("PrecipitationPresenter"));
+	LightningPresenter = CreateDefaultSubobject<UWeatherLightningPresenter>(
+		TEXT("LightningPresenter"));
 
 #if WITH_EDITORONLY_DATA
 	WeatherGridDebugComponent = CreateDefaultSubobject<UWeatherGridDebugComponent>(TEXT("WeatherGridDebug"));
@@ -109,6 +118,13 @@ void AWeatherEnvironmentController::BeginPlay()
 	StateSubsystem->ConfigureWind(GetWindSettings());
 	StateSubsystem->SetWindDirector(WindDirector);
 	StateSubsystem->ConfigureWeatherSimulation(GetSimulationSettings());
+	ConfigureWeatherPresentation(StateSubsystem);
+	LightningPresenter->OnLightningStrike.AddUniqueDynamic(
+		this,
+		&AWeatherEnvironmentController::HandleLightningStrike);
+	LightningPresenter->OnThunderDue.AddUniqueDynamic(
+		this,
+		&AWeatherEnvironmentController::HandleThunderDue);
 
 	ConfigureMoonMesh();
 	ConfigureSkyDomeMesh();
@@ -118,6 +134,15 @@ void AWeatherEnvironmentController::BeginPlay()
 
 void AWeatherEnvironmentController::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
+	if (PrecipitationPresenter)
+	{
+		PrecipitationPresenter->ShutdownPresentation();
+	}
+	if (LightningPresenter)
+	{
+		LightningPresenter->ShutdownPresentation();
+	}
+
 	if (bControllerRegistered && WeatherStateSubsystem.IsValid())
 	{
 		if (WeatherStateSubsystem->GetWindDirector() == WindDirector)
@@ -190,6 +215,7 @@ void AWeatherEnvironmentController::RefreshEnvironment()
 		StateSubsystem->ConfigureWind(GetWindSettings());
 		StateSubsystem->SetWindDirector(WindDirector);
 		StateSubsystem->ConfigureWeatherSimulation(GetSimulationSettings());
+		ConfigureWeatherPresentation(StateSubsystem);
 	}
 	UpdateEnvironment(0.0f, true);
 }
@@ -240,6 +266,86 @@ const FWeatherWindSettings& AWeatherEnvironmentController::GetWindSettings() con
 const FWeatherSimulationSettings& AWeatherEnvironmentController::GetSimulationSettings() const
 {
 	return EnvironmentProfile ? EnvironmentProfile->Simulation : SimulationSettings;
+}
+
+const FWeatherPresentationSettings& AWeatherEnvironmentController::GetPresentationSettings() const
+{
+	return EnvironmentProfile ? EnvironmentProfile->Presentation : PresentationSettings;
+}
+
+void AWeatherEnvironmentController::ConfigureWeatherPresentation(
+	UWeatherStateSubsystem* StateSubsystem)
+{
+	const FWeatherPresentationSettings& Settings = GetPresentationSettings();
+	if (PrecipitationPresenter)
+	{
+		PrecipitationPresenter->Configure(
+			StateSubsystem,
+			Settings.Precipitation,
+			Settings.NiagaraParameters);
+	}
+	if (LightningPresenter)
+	{
+		LightningPresenter->Configure(
+			StateSubsystem,
+			Settings.Lightning,
+			Settings.NiagaraParameters,
+			GetSimulationSettings().EnvironmentSeed);
+	}
+}
+
+void AWeatherEnvironmentController::UpdateWeatherPresentation(const float DeltaSeconds)
+{
+	TArray<FVector> ViewLocations;
+	GatherLocalViewLocations(ViewLocations);
+	if (PrecipitationPresenter)
+	{
+		PrecipitationPresenter->UpdatePresentation(DeltaSeconds, ViewLocations);
+	}
+	if (LightningPresenter)
+	{
+		LightningPresenter->UpdatePresentation(DeltaSeconds, ViewLocations);
+	}
+}
+
+void AWeatherEnvironmentController::GatherLocalViewLocations(
+	TArray<FVector>& OutViewLocations) const
+{
+	OutViewLocations.Reset();
+	const UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	for (FConstPlayerControllerIterator ControllerIt = World->GetPlayerControllerIterator();
+		ControllerIt;
+		++ControllerIt)
+	{
+		const APlayerController* PlayerController = ControllerIt->Get();
+		if (PlayerController
+			&& PlayerController->IsLocalController()
+			&& PlayerController->PlayerCameraManager)
+		{
+			OutViewLocations.Add(PlayerController->PlayerCameraManager->GetCameraLocation());
+		}
+	}
+}
+
+void AWeatherEnvironmentController::HandleLightningStrike(
+	const FVector Location,
+	const float Intensity,
+	const FWeatherCellCoord CellCoord)
+{
+	OnLightningStrike.Broadcast(Location, Intensity, CellCoord);
+}
+
+void AWeatherEnvironmentController::HandleThunderDue(
+	const FVector Location,
+	const float Intensity,
+	const FWeatherCellCoord CellCoord)
+{
+	OnThunderDue.Broadcast(Location, Intensity, CellCoord);
 }
 
 void AWeatherEnvironmentController::RebuildGrid()
@@ -922,6 +1028,7 @@ void AWeatherEnvironmentController::UpdateEnvironment(
 	UpdateSkyDomeVisual();
 	UpdateSkyboxParameters(DayFraction);
 	UpdateCelestialTransitionEvents(DateTime, CelestialState.SunElevationDegrees);
+	UpdateWeatherPresentation(DeltaSeconds);
 
 	const FWeatherAstronomySettings& Settings = GetAstronomySettings();
 	if (Settings.bRecaptureSkyLight && SkyLight && SkyLight->GetLightComponent())

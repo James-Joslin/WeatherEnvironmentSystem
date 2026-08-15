@@ -66,4 +66,12 @@ void UWeatherEnvironmentProfile::PostLoad()
 		}
 		DataVersion = 6;
 	}
+
+	if (DataVersion < 7)
+	{
+		// Stage 5 adds optional, derived Niagara presentation. Existing profiles
+		// receive the complete bounded-pool and deterministic-lightning defaults.
+		Presentation = FWeatherPresentationSettings();
+		DataVersion = 7;
+	}
 }
