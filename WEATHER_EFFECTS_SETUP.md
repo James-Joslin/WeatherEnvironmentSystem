@@ -91,7 +91,7 @@ Add `User.WeatherWindVector` to the downward velocity. Keep most vertical speed 
 
 ### Weather-cell scale and camera-local spawning
 
-The default weather cell is `100000` cm, or one kilometre, wide. The presenter currently supplies an XY half-extent of approximately `55000` cm with the default ten-percent overlap. Uniformly spawning rain throughout that complete volume would spend most particles outside the visible area.
+The default weather cell is `100000` cm, or one kilometre, wide. The presenter supplies an XY half-extent of `60000` cm with the default `0.1` overlap (`100000 * (0.5 + 0.1)`). Uniformly spawning rain throughout that complete volume would spend most particles outside the visible area.
 
 Use `User.WeatherCellCenter` and `User.WeatherCellExtent` as clipping boundaries, while generating particles inside a camera-local volume. Good starting dimensions are:
 
